@@ -166,51 +166,6 @@ private void logSecurityIncident(String attemptedUsername) {
                // Start heartbeat service
                heartbeatService.startHeartbeat(traditionalUser.getName());
                
-               // Register user for P2P communication
-               Platform.runLater(() -> {
-                   new Thread(() -> {
-                       try {
-                           boolean registered = com.saferoom.client.ClientMenu.registerP2PUser(traditionalUser.getName());
-                           if (registered) {
-                               System.out.println("✅ P2P registration successful for user: " + traditionalUser.getName());
-                               
-                               // 🆕 NAT Profiling Integration - Start background profiling after P2P registration
-                               try {
-                                   System.out.println("🔍 Starting NAT profiling for user: " + traditionalUser.getName());
-                                   
-                                   // Profile NAT behavior (optimized 250 samples)
-                                   com.saferoom.natghost.NatAnalyzer.NATProfile profile = 
-                                       com.saferoom.natghost.NatAnalyzer.profileNATBehavior(250);
-                                   
-                                   if (profile != null) {
-                                       String natTypeStr = (profile.natType == 0x11) ? "SYMMETRIC" : "NON-SYMMETRIC";
-                                       System.out.println("✅ NAT profiling completed: Type=" + 
-                                           String.format("0x%02X", profile.natType) + 
-                                           " (" + natTypeStr + "), Port Range=" + profile.minPort + "-" + profile.maxPort);
-                                       
-                                       // Send profile to server
-                                       java.net.InetSocketAddress serverAddr = 
-                                           new java.net.InetSocketAddress("35.198.64.68", 45000);
-                                       com.saferoom.natghost.NatAnalyzer.sendNATProfileToServer(
-                                           traditionalUser.getName(), serverAddr);
-                                       
-                                       System.out.println("✅ NAT profile sent to server successfully");
-                                   } else {
-                                       System.err.println("⚠️ NAT profiling returned null profile");
-                                   }
-                               } catch (Exception natEx) {
-                                   System.err.println("⚠️ NAT profiling error (non-critical): " + natEx.getMessage());
-                                   // Non-critical - P2P can still work with legacy fallback
-                               }
-                           } else {
-                               System.err.println("⚠️ P2P registration failed for user: " + traditionalUser.getName());
-                           }
-                       } catch (Exception e) {
-                           System.err.println("❌ P2P registration error: " + e.getMessage());
-                       }
-                   }).start();
-               });
-               
                try {
                  Stage loginStage = (Stage) rootPane.getScene().getWindow();
                  loginStage.close();
@@ -396,51 +351,6 @@ private void logSecurityIncident(String attemptedUsername) {
             com.saferoom.gui.utils.HeartbeatService.getInstance().startHeartbeat(userInfo.getName());
             
             // Register user for P2P communication
-            Platform.runLater(() -> {
-                new Thread(() -> {
-                    try {
-                        boolean registered = com.saferoom.client.ClientMenu.registerP2PUser(userInfo.getName());
-                        if (registered) {
-                            System.out.println("✅ P2P registration successful for OAuth user: " + userInfo.getName());
-                            
-                            // 🆕 NAT Profiling Integration - Start background profiling after P2P registration
-                            try {
-                                System.out.println("🔍 Starting NAT profiling for OAuth user: " + userInfo.getName());
-                                
-                                // Profile NAT behavior (optimized 250 samples for symmetric, instant for non-symmetric)
-                                com.saferoom.natghost.NatAnalyzer.NATProfile profile = 
-                                    com.saferoom.natghost.NatAnalyzer.profileNATBehavior(250);
-                                
-                                if (profile != null) {
-                                    String natTypeStr = (profile.natType == 0x11) ? "SYMMETRIC" : "NON-SYMMETRIC";
-                                    System.out.println("✅ NAT profiling completed: Type=" + 
-                                        String.format("0x%02X", profile.natType) + 
-                                        " (" + natTypeStr + "), Port Range=" + profile.minPort + "-" + profile.maxPort);
-                                    
-                                    // Send profile to server
-                                    java.net.InetSocketAddress serverAddr = 
-                                        new java.net.InetSocketAddress("35.198.64.68", 45000);
-                                    com.saferoom.natghost.NatAnalyzer.sendNATProfileToServer(
-                                        userInfo.getName(), serverAddr);
-                                    
-                                    System.out.println("✅ NAT profile sent to server successfully");
-                                } else {
-                                    System.err.println("⚠️ NAT profiling returned null profile");
-                                }
-                            } catch (Exception natEx) {
-                                System.err.println("⚠️ NAT profiling error (non-critical): " + natEx.getMessage());
-                                // Non-critical - P2P can still work with legacy fallback
-                            }
-                        } else {
-                            System.err.println("⚠️ P2P registration failed for OAuth user: " + userInfo.getName());
-                        }
-                    } catch (Exception e) {
-                        System.err.println("❌ P2P registration error: " + e.getMessage());
-                    }
-                }).start();
-            });
-            
-            // TODO: Check if user exists in database
             // If not, create user account with OAuth info
             
             // For now, directly proceed to main view

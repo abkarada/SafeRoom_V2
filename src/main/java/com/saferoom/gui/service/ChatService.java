@@ -2,8 +2,6 @@ package com.saferoom.gui.service;
 
 
 import com.saferoom.gui.model.Message;
-import com.saferoom.gui.model.User;
-import com.saferoom.client.ClientMenu;
 import javafx.beans.property.ObjectProperty;
 import javafx.beans.property.SimpleObjectProperty;
 import javafx.collections.FXCollections;
@@ -66,61 +64,7 @@ public class ChatService {
      * @param text Gönderilecek mesaj metni
      * @param sender Mesajı gönderen kullanıcı
      */
-    public void sendMessage(String channelId, String text, User sender) {
-        if (text == null || text.trim().isEmpty()) return;
-
-        Message newMessage = new Message(
-                text,
-                sender.getId(),
-                sender.getName().isEmpty() ? "" : sender.getName().substring(0, 1)
-        );
-
-        // Mesajı ilgili kanalın listesine ekle
-        ObservableList<Message> messages = getMessagesForChannel(channelId);
-        messages.add(newMessage);
-
-        // Try P2P messaging first (check if specific peer connection exists)
-        boolean sentViaP2P = false;
-        
-        // Check if we have active P2P connection with this specific user
-        if (ClientMenu.isP2PMessagingAvailable(channelId)) {
-            // Use reliable messaging protocol (with chunking, ACK, retransmission)
-            try {
-                java.util.concurrent.CompletableFuture<Boolean> future = 
-                    com.saferoom.natghost.NatAnalyzer.sendReliableMessage(channelId, text);
-                
-                // Wait for send completion (with timeout)
-                sentViaP2P = future.get(5, java.util.concurrent.TimeUnit.SECONDS);
-                
-                if (sentViaP2P) {
-                    System.out.println("[Chat] ✅ Message sent via Reliable P2P to " + channelId);
-                } else {
-                    System.out.println("[Chat] ⚠️ Reliable P2P send failed to " + channelId);
-                }
-            } catch (Exception e) {
-                System.err.println("[Chat] ❌ Reliable P2P error: " + e.getMessage());
-                sentViaP2P = false;
-            }
-        }
-        
-        if (!sentViaP2P) {
-            System.out.printf("[Chat] 📡 No P2P connection with %s - would use server relay%n", channelId);
-            // TODO: Implement server relay messaging
-        }
-
-        // Update contact's last message (from me)
-        try {
-            com.saferoom.gui.service.ContactService.getInstance()
-                .updateLastMessage(channelId, text, true);
-        } catch (Exception e) {
-            System.err.println("[Chat] Error updating contact last message: " + e.getMessage());
-        }
-
-        // Yeni mesaj geldiğini tüm dinleyenlere haber ver!
-        newMessageProperty.set(newMessage);
-    }
-
-    /**
+        /**
      * Belirtilen kanalın mesaj listesini döndürür.
      * @param channelId Sohbet kanalının ID'si
      * @return O kanala ait ObservableList<Message>
@@ -193,60 +137,6 @@ public class ChatService {
      * @param targetUser Dosya gönderilecek kullanıcı
      * @param filePath Gönderilecek dosyanın yolu
      */
-    public void sendFile(String targetUser, java.nio.file.Path filePath) {
-        if (targetUser == null || filePath == null) {
-            System.err.println("[Chat] ❌ Invalid sendFile parameters");
-            return;
-        }
-        
-        System.out.printf("[Chat] 📁 Starting file transfer: %s -> %s%n", 
-            filePath.getFileName(), targetUser);
-        
-        // Check P2P connection
-        if (!ClientMenu.isP2PMessagingAvailable(targetUser)) {
-            System.err.printf("[Chat] ❌ No P2P connection with %s%n", targetUser);
-            javafx.application.Platform.runLater(() -> {
-                javafx.scene.control.Alert alert = new javafx.scene.control.Alert(
-                    javafx.scene.control.Alert.AlertType.ERROR);
-                alert.setTitle("P2P Error");
-                alert.setHeaderText("No P2P Connection");
-                alert.setContentText("Cannot send file - no active P2P connection with " + targetUser);
-                alert.showAndWait();
-            });
-            return;
-        }
-        
-        try {
-            // Call NatAnalyzer.sendFile()
-            com.saferoom.natghost.NatAnalyzer.sendFile(targetUser, filePath);
-            System.out.printf("[Chat] ✅ File transfer initiated: %s%n", filePath.getFileName());
-            
-            // Show success notification
-            javafx.application.Platform.runLater(() -> {
-                javafx.scene.control.Alert alert = new javafx.scene.control.Alert(
-                    javafx.scene.control.Alert.AlertType.INFORMATION);
-                alert.setTitle("File Transfer");
-                alert.setHeaderText("File Transfer Started");
-                alert.setContentText("Sending " + filePath.getFileName() + " to " + targetUser);
-                alert.show();
-            });
-            
-        } catch (Exception e) {
-            System.err.printf("[Chat] ❌ File transfer error: %s%n", e.getMessage());
-            e.printStackTrace();
-            
-            javafx.application.Platform.runLater(() -> {
-                javafx.scene.control.Alert alert = new javafx.scene.control.Alert(
-                    javafx.scene.control.Alert.AlertType.ERROR);
-                alert.setTitle("File Transfer Error");
-                alert.setHeaderText("Failed to Send File");
-                alert.setContentText(e.getMessage());
-                alert.showAndWait();
-            });
-        }
-    }
-
-    // No dummy messages - start with clean slate
     private void setupDummyMessages() {
         // All chat channels start empty - real messages will be added via P2P
         System.out.println("[ChatService] 🧹 Started with clean message history - no dummy messages");

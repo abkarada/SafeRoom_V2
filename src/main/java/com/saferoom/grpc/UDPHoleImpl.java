@@ -105,7 +105,6 @@ public class UDPHoleImpl extends UDPHoleGrpc.UDPHoleImplBase {
 		String username = request.getUsername();
 		String email =  request.getEmail();
 		String password = request.getPassword();
-		// verification_code ve is_verified kullanılmıyor, kaldırıldı
 	
 		boolean is_mail_valid = true;
 		try {
@@ -121,11 +120,9 @@ public class UDPHoleImpl extends UDPHoleGrpc.UDPHoleImplBase {
 			try {
 				if(DBManager.createUser(username, password, email))
 				{
-					// Her kullanıcı için yeni verification code üret
 					String verificationCode = VerificationCodeGenerator.generateVerificationCode();
 					DBManager.setVerificationCode(username, verificationCode);
 					
-					// Yeni HTML template ile email gönder
 					if(EmailSender.sendVerificationEmail(email, username, verificationCode)) {
 						System.out.println("Successfully Registered and verification email sent!");
 					}
@@ -144,7 +141,6 @@ public class UDPHoleImpl extends UDPHoleGrpc.UDPHoleImplBase {
 					response.onNext(not_valid);
 				}
 			} catch (Exception e) {
-				// TODO Auto-generated catch block
 				e.printStackTrace();
 				response.onError(e);
 
@@ -165,7 +161,7 @@ public class UDPHoleImpl extends UDPHoleGrpc.UDPHoleImplBase {
 	@Override 
 	public void verifyUser(Verification verify_code, StreamObserver<Status> responseObserver)
 	{
-		String usernameOrEmail = verify_code.getUsername(); // Artık username veya email olabilir
+		String usernameOrEmail = verify_code.getUsername(); 
 		String verCode = verify_code.getVerify();
 		try {
 		String db_search = DBManager.getVerificationCode(usernameOrEmail);
@@ -246,7 +242,6 @@ public class UDPHoleImpl extends UDPHoleGrpc.UDPHoleImplBase {
 		String requestData = request.getUsername(); // Format: "email:newpassword"
 		
 		try {
-			// Request formatını parse et
 			if (!requestData.contains(":")) {
 				Status errorResponse = Status.newBuilder()
 					.setMessage("INVALID_FORMAT")
@@ -261,7 +256,6 @@ public class UDPHoleImpl extends UDPHoleGrpc.UDPHoleImplBase {
 			String email = parts[0];
 			String newPassword = parts[1];
 			
-			// Email'in kayıtlı olup olmadığını kontrol et
 			if (!DBManager.check_email(email)) {
 				Status notFoundResponse = Status.newBuilder()
 					.setMessage("EMAIL_NOT_FOUND")
@@ -365,18 +359,18 @@ public class UDPHoleImpl extends UDPHoleGrpc.UDPHoleImplBase {
 					.build());
 			}
 			
-			System.out.println("✅ Search completed successfully, sending response to client");
+			System.out.println("Search completed successfully, sending response to client");
 			responseObserver.onNext(responseBuilder.build());
 			responseObserver.onCompleted();
 			
 		} catch (Exception e) {
-			System.err.println("❌ Search Error: " + e.getMessage());
+			System.err.println("Search Error: " + e.getMessage());
 			e.printStackTrace();
 			responseObserver.onError(e);
 		}
 	}
 
-	// ===============================
+// ===============================
 // PROFILE SYSTEM METHODS
 // ===============================
 
@@ -386,11 +380,11 @@ public void getProfile(ProfileRequest request, StreamObserver<ProfileResponse> r
         String username = request.getUsername();
         String requestedBy = request.getRequestedBy();
         
-        System.out.println("📋 Profile request for '" + username + "' by '" + requestedBy + "'");
+        System.out.println("Profile request for '" + username + "' by '" + requestedBy + "'");
         
         // Kullanıcı var mı kontrol et
         if (!DBManager.userExists(username)) {
-            System.out.println("❌ User '" + username + "' not found");
+            System.out.println("User '" + username + "' not found");
             responseObserver.onNext(ProfileResponse.newBuilder()
                 .setSuccess(false)
                 .setMessage("User not found")
@@ -399,11 +393,10 @@ public void getProfile(ProfileRequest request, StreamObserver<ProfileResponse> r
             return;
         }
         
-        // Profile bilgilerini al
         java.util.Map<String, Object> profileData = DBManager.getUserProfile(username, requestedBy);
         
         if (profileData == null) {
-            System.out.println("❌ Failed to load profile for '" + username + "'");
+            System.out.println("Failed to load profile for '" + username + "'");
             responseObserver.onNext(ProfileResponse.newBuilder()
                 .setSuccess(false)
                 .setMessage("Failed to load profile")
@@ -459,7 +452,7 @@ public void getProfile(ProfileRequest request, StreamObserver<ProfileResponse> r
         
         UserProfile profile = profileBuilder.build();
         
-        System.out.println("✅ Profile loaded for '" + username + "' - Friend status: " + friendStatus);
+        System.out.println("Profile loaded for '" + username + "' - Friend status: " + friendStatus);
         
         responseObserver.onNext(ProfileResponse.newBuilder()
             .setSuccess(true)
@@ -469,7 +462,7 @@ public void getProfile(ProfileRequest request, StreamObserver<ProfileResponse> r
         responseObserver.onCompleted();
         
     } catch (Exception e) {
-        System.err.println("❌ Profile request error: " + e.getMessage());
+        System.err.println("Profile request error: " + e.getMessage());
         e.printStackTrace();
         responseObserver.onNext(ProfileResponse.newBuilder()
             .setSuccess(false)
@@ -486,11 +479,10 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
         String receiver = request.getReceiver();
         String message = request.getMessage();
         
-        System.out.println("👥 Friend request: '" + sender + "' -> '" + receiver + "'");
+        System.out.println("Friend request: '" + sender + "' -> '" + receiver + "'");
         
-        // Kullanıcılar var mı kontrol et
         if (!DBManager.userExists(sender) || !DBManager.userExists(receiver)) {
-            System.out.println("❌ One or both users not found");
+            System.out.println("One or both users not found");
             responseObserver.onNext(FriendResponse.newBuilder()
                 .setSuccess(false)
                 .setMessage("User not found")
@@ -504,14 +496,14 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
         boolean success = DBManager.sendFriendRequest(sender, receiver, message);
         
         if (success) {
-            System.out.println("✅ Friend request sent successfully");
+            System.out.println("Friend request sent successfully");
             responseObserver.onNext(FriendResponse.newBuilder()
                 .setSuccess(true)
                 .setMessage("Friend request sent successfully")
                 .setStatus("sent")
                 .build());
         } else {
-            System.out.println("❌ Friend request failed (already exists or blocked)");
+            System.out.println("Friend request failed (already exists or blocked)");
             responseObserver.onNext(FriendResponse.newBuilder()
                 .setSuccess(false)
                 .setMessage("Friend request already exists or users are blocked")
@@ -522,7 +514,7 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
         responseObserver.onCompleted();
         
     } catch (Exception e) {
-        System.err.println("❌ Friend request error: " + e.getMessage());
+        System.err.println("Friend request error: " + e.getMessage());
         e.printStackTrace();
         responseObserver.onNext(FriendResponse.newBuilder()
             .setSuccess(false)
@@ -559,8 +551,6 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 
 	    System.out.println("[HANDSHAKE] " + client + " ↔ " + target + " @ " + time);
 
-	    // (İleride buraya log database işlemleri eklenebilir)
-
 	    SafeRoomProto.Status response = SafeRoomProto.Status.newBuilder()
 	        .setMessage("Handshake logged successfully.")
 	        .setCode(0)
@@ -568,8 +558,7 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 
 	    responseObserver.onNext(response);
 	    responseObserver.onCompleted();
-	}	    // (İleride buraya log database işlemleri eklenebilir)
-
+	}	    
 
 	@Override
 	public void heartBeat(Stun_Info request, StreamObserver<Status> responseObserver) {
@@ -621,19 +610,6 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 	    responseObserver.onCompleted();
 	}
 
-	@Override
-	public void getServerPublicKey(SafeRoomProto.Empty request, StreamObserver<SafeRoomProto.PublicKeyMessage> responseObserver) {
-	    byte[] rsa_pub = KeyExchange.publicKey.getEncoded();
-	    String publicKeyBase64 = Base64.getEncoder().encodeToString(rsa_pub);
-
-	    SafeRoomProto.PublicKeyMessage response = SafeRoomProto.PublicKeyMessage.newBuilder()
-	        .setBase64Key(publicKeyBase64)
-	        .build();
-
-	    responseObserver.onNext(response);
-	    responseObserver.onCompleted();
-	}
-	
 	// ===============================
 	// FRIEND SYSTEM - EKSIK METODLAR
 	// ===============================
@@ -643,7 +619,7 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 		try {
 			String username = request.getUsername();
 			
-			System.out.println("👥 Getting pending friend requests for: " + username);
+			System.out.println("Getting pending friend requests for: " + username);
 			
 			List<Map<String, Object>> requests = DBManager.getPendingFriendRequests(username);
 			
@@ -669,12 +645,12 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 				responseBuilder.addRequests(friendRequestInfo);
 			}
 			
-			System.out.println("✅ Found " + requests.size() + " pending requests");
+			System.out.println("Found " + requests.size() + " pending requests");
 			responseObserver.onNext(responseBuilder.build());
 			responseObserver.onCompleted();
 			
 		} catch (Exception e) {
-			System.err.println("❌ Error getting pending requests: " + e.getMessage());
+			System.err.println("Error getting pending requests: " + e.getMessage());
 			responseObserver.onNext(SafeRoomProto.PendingRequestsResponse.newBuilder()
 				.setSuccess(false)
 				.setMessage("Error: " + e.getMessage())
@@ -716,7 +692,7 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 			responseObserver.onCompleted();
 			
 		} catch (Exception e) {
-			System.err.println("❌ Error getting sent requests: " + e.getMessage());
+			System.err.println("Error getting sent requests: " + e.getMessage());
 			responseObserver.onNext(SafeRoomProto.SentRequestsResponse.newBuilder()
 				.setSuccess(false)
 				.setMessage("Error: " + e.getMessage())
@@ -731,7 +707,7 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 			int requestId = request.getRequestId();
 			String username = request.getUsername();
 			
-			System.out.println("✅ Accepting friend request: " + requestId + " by " + username);
+			System.out.println("Accepting friend request: " + requestId + " by " + username);
 			
 			boolean success = DBManager.acceptFriendRequest(requestId, username);
 			
@@ -752,7 +728,7 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 			responseObserver.onCompleted();
 			
 		} catch (Exception e) {
-			System.err.println("❌ Error accepting friend request: " + e.getMessage());
+			System.err.println("Error accepting friend request: " + e.getMessage());
 			responseObserver.onNext(Status.newBuilder()
 				.setMessage("Error: " + e.getMessage())
 				.setCode(2)
@@ -767,7 +743,7 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 			int requestId = request.getRequestId();
 			String username = request.getUsername();
 			
-			System.out.println("❌ Rejecting friend request: " + requestId + " by " + username);
+			System.out.println("Rejecting friend request: " + requestId + " by " + username);
 			
 			boolean success = DBManager.rejectFriendRequest(requestId, username);
 			
@@ -788,7 +764,7 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 			responseObserver.onCompleted();
 			
 		} catch (Exception e) {
-			System.err.println("❌ Error rejecting friend request: " + e.getMessage());
+			System.err.println("Error rejecting friend request: " + e.getMessage());
 			responseObserver.onNext(Status.newBuilder()
 				.setMessage("Error: " + e.getMessage())
 				.setCode(2)
@@ -940,7 +916,7 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 			String username = request.getUsername();
 			String sessionId = request.getSessionId();
 			
-			System.out.println("💓 Heartbeat from: " + username + " (session: " + sessionId + ")");
+			System.out.println("Heartbeat from: " + username + " (session: " + sessionId + ")");
 			
 			boolean success = DBManager.updateHeartbeat(username, sessionId);
 			
@@ -961,7 +937,7 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 			responseObserver.onCompleted();
 			
 		} catch (Exception e) {
-			System.err.println("❌ Error processing heartbeat: " + e.getMessage());
+			System.err.println("Error processing heartbeat: " + e.getMessage());
 			responseObserver.onNext(SafeRoomProto.HeartbeatResponse.newBuilder()
 				.setSuccess(false)
 				.setMessage("Error: " + e.getMessage())
@@ -976,7 +952,7 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 			String username = request.getUsername();
 			String sessionId = request.getSessionId();
 			
-			System.out.println("🗑️ Ending session for: " + username + " (session: " + sessionId + ")");
+			System.out.println("Ending session for: " + username + " (session: " + sessionId + ")");
 			
 			boolean success = DBManager.endUserSession(username, sessionId);
 			
@@ -997,7 +973,7 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 			responseObserver.onCompleted();
 			
 		} catch (Exception e) {
-			System.err.println("❌ Error ending session: " + e.getMessage());
+			System.err.println("Error ending session: " + e.getMessage());
 			responseObserver.onNext(Status.newBuilder()
 				.setMessage("Error: " + e.getMessage())
 				.setCode(2)
@@ -1006,8 +982,4 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 		}
 	}
 	
-	// ...existing code...
-	
-
-
 }

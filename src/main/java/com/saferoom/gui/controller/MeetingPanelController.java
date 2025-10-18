@@ -113,10 +113,10 @@ public class MeetingPanelController {
         showGridView();
 
         if (meetingChatViewController != null) {
-            meetingChatViewController.initChannel(currentMeeting.getMeetingId());
             meetingChatViewController.setHeader("Toplantı Sohbeti", "Online", "G", true);
             meetingChatViewController.setWidthConstraint(rightPanelVBox.getPrefWidth());
             meetingChatViewController.setHeaderVisible(false);
+            // ❌ P2P REMOVED: meetingChatViewController.initChannel(currentMeeting.getMeetingId());
         }
         updateMicButtonState();
         updateCameraButtonState();

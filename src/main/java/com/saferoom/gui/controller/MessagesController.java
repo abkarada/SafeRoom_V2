@@ -41,52 +41,18 @@ public class MessagesController {
         mainSplitPane.setDividerPositions(0.30);
 
         setupModelAndListViews();
-        setupContactSelectionListener();
-
         if (!contactListView.getItems().isEmpty()) {
             contactListView.getSelectionModel().selectFirst();
         }
     }
 
     private void setupModelAndListViews() {
-        // Use ContactService for persistent contact management
         contactListView.setItems(contactService.getContactList());
         contactListView.setCellFactory(param -> new ContactCell());
         
         System.out.println("[MessagesController] 📱 Initialized with persistent contact service");
     }
 
-    private void setupContactSelectionListener() {
-        contactSelectionListener = (obs, oldSelection, newSelection) -> {
-            // Clear previous active chat
-            if (oldSelection != null) {
-                contactService.clearActiveChat();
-            }
-            
-            if (newSelection != null && chatViewController != null) {
-                // Set new active chat and mark as read
-                contactService.setActiveChat(newSelection.getId());
-                
-                chatViewController.initChannel(newSelection.getId());
-                chatViewController.setHeader(
-                        newSelection.getName(),
-                        newSelection.getStatus(),
-                        newSelection.getAvatarChar(),
-                        newSelection.isGroup()
-                );
-                
-                // Try to establish P2P connection for new chats
-                tryP2PConnection(newSelection.getId());
-                
-                System.out.printf("[MessagesController] 👁️ Selected chat: %s (marked as read)%n", newSelection.getId());
-            }
-        };
-        contactListView.getSelectionModel().selectedItemProperty().addListener(contactSelectionListener);
-    }
-    
-    /**
-     * External controllers'dan çağrılır - belirli kullanıcıyla sohbet başlat
-     */
     public static void openChatWithUser(String username) {
         if (instance != null) {
             Platform.runLater(() -> {
@@ -94,41 +60,7 @@ public class MessagesController {
             });
         }
     }
-    
-    /**
-     * P2P notification geldiğinde otomatik mesaj gönder
-     */
-    public static void openChatWithUserAndNotify(String username, String notificationMessage) {
-        if (instance != null) {
-            Platform.runLater(() -> {
-                instance.selectOrAddUser(username);
-                
-                // Send automatic notification message
-                if (instance.chatViewController != null) {
-                    try {
-                        // Wait a bit for chat to initialize
-                        Thread.sleep(100);
-                        
-                        // Create system message about P2P connection
-                        com.saferoom.gui.service.ChatService chatService = 
-                            com.saferoom.gui.service.ChatService.getInstance();
-                        
-                        // Create a system user for notification (using proper constructor)
-                        com.saferoom.gui.model.User systemUser = new com.saferoom.gui.model.User("system", "System");
-                        
-                        // Send notification message
-                        chatService.sendMessage(username, notificationMessage, systemUser);
-                        
-                        System.out.printf("[GUI] 📬 Sent P2P notification message to chat with %s%n", username);
-                        
-                    } catch (Exception e) {
-                        System.err.println("[GUI] Error sending notification message: " + e.getMessage());
-                    }
-                }
-            });
-        }
-    }
-    
+   
     /**
      * Kullanıcıyı contact listesinde seç veya ekle
      */
@@ -151,9 +83,9 @@ public class MessagesController {
                 Contact newContact = contactService.getContact(username);
                 if (newContact != null) {
                     contactListView.getSelectionModel().select(newContact);
-                    System.out.printf("📱 Added and selected new contact: %s%n", username);
+                    System.out.printf("Added and selected new contact: %s%n", username);
                 } else {
-                    System.err.printf("⚠️ Contact %s was added but not found in list%n", username);
+                    System.err.printf("Contact %s was added but not found in list%n", username);
                 }
             });
         }
@@ -211,90 +143,4 @@ public class MessagesController {
         public boolean isOnline() { return status.equalsIgnoreCase("online"); }
     }
     
-    // ============================================
-    // P2P CONNECTION MANAGEMENT
-    // ============================================
-    
-    /**
-     * 🆕 ASYNC NON-BLOCKING P2P Connection Management
-     * Try to establish P2P connection with user (prevents duplicate requests)
-     */
-    private void tryP2PConnection(String username) {
-        // Skip P2P for groups
-        if (username.contains("Grubu") || username.equals("meeting_phoenix")) {
-            System.out.printf("[P2P] ⏭️ Skipping P2P for group: %s%n", username);
-            return;
-        }
-        
-        // 🆕 Check if P2P already established at NatAnalyzer level (incoming connections)
-        if (com.saferoom.natghost.NatAnalyzer.isP2PActive(username)) {
-            System.out.printf("[P2P] ✅ P2P already active (from activePeers) for %s%n", username);
-            connectionStatus.put(username, "P2P Active");
-            updateContactStatus(username, "🔗 P2P Connected");
-            return;
-        }
-        
-        // Check current status in UI cache
-        String currentStatus = connectionStatus.get(username);
-        
-        // Skip if already connected
-        if ("P2P Active".equals(currentStatus)) {
-            System.out.printf("[P2P] ✅ Already connected (from UI cache) to %s%n", username);
-            return;
-        }
-        
-        // Skip if already connecting (CRITICAL - prevents duplicate requests)
-        if ("Connecting...".equals(currentStatus)) {
-            System.out.printf("[P2P] ⏳ Connection already in progress for %s%n", username);
-            return;
-        }
-        
-        // Mark as connecting BEFORE starting async operation
-        connectionStatus.put(username, "Connecting...");
-        updateContactStatus(username, "P2P connecting...");
-        System.out.printf("[P2P] 🚀 Starting P2P connection for %s%n", username);
-        
-        // Get current user
-        String myUsername = com.saferoom.gui.utils.UserSession.getInstance().getDisplayName();
-        
-        // Use ASYNC NON-BLOCKING version (no ForkJoinPool blocking)
-        ClientMenu.startP2PHolePunchAsync(myUsername, username)
-            .thenAcceptAsync(success -> {
-                // Update UI on JavaFX thread
-                javafx.application.Platform.runLater(() -> {
-                    if (success) {
-                        connectionStatus.put(username, "P2P Active");
-                        updateContactStatus(username, "🔗 P2P Connected");
-                        System.out.println("[P2P] ✅ P2P connection established with " + username);
-                    } else {
-                        connectionStatus.put(username, "Server Relay");
-                        updateContactStatus(username, "📡 Server Relay");
-                        System.out.println("[P2P] ⚠️ Using server relay for " + username);
-                    }
-                });
-            })
-            .exceptionally(e -> {
-                // Handle errors on JavaFX thread
-                javafx.application.Platform.runLater(() -> {
-                    connectionStatus.put(username, "Server Relay");
-                    updateContactStatus(username, "📡 Server Relay");
-                    System.err.println("[P2P] ❌ Connection error: " + e.getMessage());
-                });
-                return null;
-            });
-    }
-    
-    /**
-     * Get connection status for a user
-     */
-    public String getConnectionStatus(String username) {
-        return connectionStatus.getOrDefault(username, "Unknown");
-    }
-    
-    /**
-     * Check if user has active P2P connection
-     */
-    public boolean hasP2PConnection(String username) {
-        return "P2P Active".equals(connectionStatus.get(username));
-    }
 }

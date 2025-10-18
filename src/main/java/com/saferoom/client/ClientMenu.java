@@ -6,70 +6,94 @@ import com.saferoom.grpc.SafeRoomProto.Status;
 import com.saferoom.grpc.UDPHoleGrpc;
 import com.saferoom.grpc.SafeRoomProto.Verification;
 import com.saferoom.server.SafeRoomServer;
-import com.saferoom.natghost.NatAnalyzer;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
-import java.net.InetSocketAddress;
+import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+import io.grpc.netty.shaded.io.netty.handler.ssl.SslContext;
+import java.io.File;
 import java.util.concurrent.TimeUnit;
 
 public class ClientMenu{
 	public static String Server = SafeRoomServer.ServerIP;
 	public static int Port = SafeRoomServer.grpcPort;
 	public static int UDP_Port = SafeRoomServer.udpPort1;
+	private static String CERT_PATH = "certs/server.crt";
+	public static ManagedChannel STUB_CHANNEL;
 
-		public static String Login(String username, String Password)
-		{
-		ManagedChannel channel = null;
+	static{
+		try{
+		STUB_CHANNEL = createChannel();
+		}catch(Exception e){
+			System.err.println("Channel Creation Error: " + e);
+		}
+	}
+	
+	private static ManagedChannel createChannel() {
 		try {
-			channel = ManagedChannelBuilder.forAddress(Server, Port)
-				.usePlaintext()
+			SslContext sslContext = GrpcSslContexts.forClient()
+				.trustManager(new File(CERT_PATH))
 				.build();
 
-			UDPHoleGrpc.UDPHoleBlockingStub client = UDPHoleGrpc.newBlockingStub(channel)
-				.withDeadlineAfter(10, java.util.concurrent.TimeUnit.SECONDS);
+			return NettyChannelBuilder.forAddress(Server, Port)
+				.sslContext(sslContext)
+				.overrideAuthority(Server)
+				.keepAliveTime(30, TimeUnit.SECONDS)  // Her 30 saniyede bir keepalive gönder
+				.keepAliveTimeout(10, TimeUnit.SECONDS)  // 10 saniye timeout
+				.keepAliveWithoutCalls(true)  // Aktif çağrı olmasa bile keepalive gönder
+				.maxInboundMessageSize(10 * 1024 * 1024)  // 10MB max message size
+				.build();
+		} catch (Exception e) {
+			System.err.println("Channel oluşturulurken hata: " + e.getMessage());
+			e.printStackTrace();
+			throw new RuntimeException("gRPC channel başlatılamadı", e);
+		}
+	}
+
+	public static String Login(String username, String Password) {
+		try {
+			UDPHoleGrpc.UDPHoleBlockingStub client = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
+				.withDeadlineAfter(10, TimeUnit.SECONDS);
+			
 			SafeRoomProto.Menu main_menu = SafeRoomProto.Menu.newBuilder()
 				.setUsername(username)
 				.setHashPassword(Password)
 				.build();
+			
 			SafeRoomProto.Status stats = client.menuAns(main_menu);
 			
 			String message = stats.getMessage();
 			int code = stats.getCode();
+			
 			switch(code){
 				case 0:
 					System.out.println("Success!");
-					System.out.printf("✅ Logged in as: %s%n", username);
-					return message; // Server'dan gelen eksik bilgiyi döndür (email veya username)
+					System.out.printf("Logged in as: %s%n", username);
+					return message; 
 				case 1:
 					if(message.equals("N_REGISTER")){
 						System.out.println("Not Registered");
 						return "N_REGISTER";
-					}else if(message.equals("WRONG_PASSWORD")){
+					} else if(message.equals("WRONG_PASSWORD")){
 						System.out.println("Wrong Password");
 						return "WRONG_PASSWORD";
-						}else{
-							System.out.println("Blocked User");
-							return "BLOCKED_USER";
-						}
-			default:
+					} else {
+						System.out.println("Blocked User");
+						return "BLOCKED_USER";
+					}
+				default:
 					System.out.println("Message has broken");
 					return "ERROR";					
-				}
-		} finally {
-			if (channel != null) {
-				channel.shutdown();
 			}
+		} catch (Exception e) {
+			System.err.println("Login hatası: " + e.getMessage());
+			e.printStackTrace();
+			return "ERROR";
 		}
-		}
-	public static int register_client(String username, String password, String mail)
-	{
-		ManagedChannel channel = null;
+	}
+	public static int register_client(String username, String password, String mail) {
 		try {
-			channel = ManagedChannelBuilder.forAddress(Server, Port)
-				.usePlaintext()
-				.build();
-
-			UDPHoleGrpc.UDPHoleBlockingStub stub = UDPHoleGrpc.newBlockingStub(channel)
+			UDPHoleGrpc.UDPHoleBlockingStub stub = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
 				.withDeadlineAfter(10, TimeUnit.SECONDS);
 			
 			SafeRoomProto.Create_User insert_obj = SafeRoomProto.Create_User.newBuilder()
@@ -78,6 +102,7 @@ public class ClientMenu{
 				.setPassword(password)
 				.setIsVerified(false)
 				.build();
+			
 			SafeRoomProto.Status stat = stub.insertUser(insert_obj);
 
 			int code = stat.getCode();
@@ -91,7 +116,7 @@ public class ClientMenu{
 					if(message.equals("VUSERNAME")){
 						System.out.println("Username already taken");
 						return 1;
-					}else{
+					} else {
 						System.out.println("Invalid E-mail");
 						return 2;
 					}
@@ -99,20 +124,15 @@ public class ClientMenu{
 					System.out.println("Message has broken");
 					return 3;					
 			}
-		} finally {
-			if (channel != null) {
-				channel.shutdown();
-			}
+		} catch (Exception e) {
+			System.err.println("Register hatası: " + e.getMessage());
+			e.printStackTrace();
+			return 3;
 		}
 	}
 	public static int verify_user(String username, String verify_code) {
-		ManagedChannel channel = null;
 		try {
-			channel = ManagedChannelBuilder.forAddress(Server, Port)
-					.usePlaintext()
-					.build();
-			
-			UDPHoleGrpc.UDPHoleBlockingStub stub = UDPHoleGrpc.newBlockingStub(channel)
+			UDPHoleGrpc.UDPHoleBlockingStub stub = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
 					.withDeadlineAfter(10, TimeUnit.SECONDS);
 			
 			Verification verification_info = Verification.newBuilder()
@@ -125,33 +145,27 @@ public class ClientMenu{
 			int code = response.getCode();
 			
 			switch(code) {
-			case 0:
-				System.out.println("Verification Completed");
-				return 0;
-			case 1:
-				System.out.println("Not Matched");
-				return 1;
-			
-			default:
-				System.out.println("Connection is not safe");
-				return 2;
+				case 0:
+					System.out.println("Verification Completed");
+					return 0;
+				case 1:
+					System.out.println("Not Matched");
+					return 1;
+				default:
+					System.out.println("Connection is not safe");
+					return 2;
 			}
-		} finally {
-			if (channel != null) {
-				channel.shutdown();
-			}
+		} catch (Exception e) {
+			System.err.println("Verify user hatası: " + e.getMessage());
+			e.printStackTrace();
+			return 2;
 		}
 	}
 
 	public static boolean verify_email(String mail){
-		ManagedChannel channel = null;
 		try{
-			channel = ManagedChannelBuilder.forAddress(Server, Port)
-				.usePlaintext()
-				.build();
-
-			UDPHoleGrpc.UDPHoleBlockingStub client = UDPHoleGrpc.newBlockingStub(channel)
-				.withDeadlineAfter(10, java.util.concurrent.TimeUnit.SECONDS);
+			UDPHoleGrpc.UDPHoleBlockingStub client = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
+				.withDeadlineAfter(10, TimeUnit.SECONDS);
 			
 			SafeRoomProto.Request_Client request = SafeRoomProto.Request_Client.newBuilder()
 				.setUsername(mail)
@@ -166,24 +180,16 @@ public class ClientMenu{
 			}
 			
 		}catch(Exception e){
-			System.err.println("Verify Channel Error: " + e);
-		}finally{
-			if(channel != null){
-				channel.shutdown();
-			}
+			System.err.println("Verify email hatası: " + e.getMessage());
+			e.printStackTrace();
 		}
-
 		return false;
 	}
 
 	public static int changePassword(String email, String newPassword) {
-		ManagedChannel channel = null;
 		try {
-			channel = ManagedChannelBuilder.forAddress(Server, Port)
-				.usePlaintext()
-				.build();
-			
-			UDPHoleGrpc.UDPHoleBlockingStub stub = UDPHoleGrpc.newBlockingStub(channel);
+			UDPHoleGrpc.UDPHoleBlockingStub stub = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
+				.withDeadlineAfter(10, TimeUnit.SECONDS);
 			
 			// Format: "email:newpassword"
 			String requestData = email + ":" + newPassword;
@@ -200,23 +206,15 @@ public class ClientMenu{
 			return code;
 			
 		} catch (Exception e) {
-			System.err.println("Change Password Channel Error: " + e);
-			return 2; // Error code
-		} finally {
-			if (channel != null) {
-				channel.shutdown();
-			}
+			System.err.println("Change Password hatası: " + e.getMessage());
+			e.printStackTrace();
+			return 2; 
 		}
 	}
 
 	public static java.util.List<java.util.Map<String, Object>> searchUsers(String searchTerm, String currentUser) throws Exception {
-		ManagedChannel channel = null;
 		try {
-			channel = ManagedChannelBuilder.forAddress(Server, Port)
-				.usePlaintext()
-				.build();
-			
-			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(channel)
+			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
 				.withDeadlineAfter(10, TimeUnit.SECONDS);
 			
 			SafeRoomProto.SearchRequest request = SafeRoomProto.SearchRequest.newBuilder()
@@ -237,8 +235,7 @@ public class ClientMenu{
 					userMap.put("is_friend", user.getIsFriend());
 					userMap.put("has_pending_request", user.getHasPendingRequest());
 					
-					// Debug log
-					System.out.println("🔍 Search Result for " + user.getUsername() + ":");
+					System.out.println("Search Result for " + user.getUsername() + ":");
 					System.out.println("  - is_friend: " + user.getIsFriend());
 					System.out.println("  - has_pending_request: " + user.getHasPendingRequest());
 					
@@ -246,21 +243,16 @@ public class ClientMenu{
 				}
 			}
 			return results;
-		} finally {
-			if (channel != null) {
-				channel.shutdown();
-			}
+		} catch (Exception e) {
+			System.err.println("Search users hatası: " + e.getMessage());
+			e.printStackTrace();
+			throw e;
 		}
 	}
 
 	public static SafeRoomProto.ProfileResponse getProfile(String targetUsername, String currentUser) throws Exception {
-		ManagedChannel channel = null;
 		try {
-			channel = ManagedChannelBuilder.forAddress(Server, Port)
-				.usePlaintext()
-				.build();
-			
-			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(channel)
+			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
 				.withDeadlineAfter(10, TimeUnit.SECONDS);
 			
 			SafeRoomProto.ProfileRequest request = SafeRoomProto.ProfileRequest.newBuilder()
@@ -270,21 +262,16 @@ public class ClientMenu{
 				
 			SafeRoomProto.ProfileResponse response = blockingStub.getProfile(request);
 			return response;
-		} finally {
-			if (channel != null) {
-				channel.shutdown();
-			}
+		} catch (Exception e) {
+			System.err.println("Get profile hatası: " + e.getMessage());
+			e.printStackTrace();
+			throw e;
 		}
 	}
 
 	public static SafeRoomProto.FriendResponse sendFriendRequest(String fromUser, String toUser) throws Exception {
-		ManagedChannel channel = null;
 		try {
-			channel = ManagedChannelBuilder.forAddress(Server, Port)
-				.usePlaintext()
-				.build();
-			
-			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(channel)
+			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
 				.withDeadlineAfter(10, TimeUnit.SECONDS);
 			
 			SafeRoomProto.FriendRequest request = SafeRoomProto.FriendRequest.newBuilder()
@@ -295,10 +282,10 @@ public class ClientMenu{
 				
 			SafeRoomProto.FriendResponse response = blockingStub.sendFriendRequest(request);
 			return response;
-		} finally {
-			if (channel != null) {
-				channel.shutdown();
-			}
+		} catch (Exception e) {
+			System.err.println("Send friend request hatası: " + e.getMessage());
+			e.printStackTrace();
+			throw e;
 		}
 	}
 
@@ -310,13 +297,8 @@ public class ClientMenu{
 	 * Bekleyen arkadaşlık isteklerini getir (gelen istekler)
 	 */
 	public static SafeRoomProto.PendingRequestsResponse getPendingFriendRequests(String username) throws Exception {
-		ManagedChannel channel = null;
 		try {
-			channel = ManagedChannelBuilder.forAddress(Server, Port)
-				.usePlaintext()
-				.build();
-			
-			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(channel)
+			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
 				.withDeadlineAfter(10, TimeUnit.SECONDS);
 			
 			SafeRoomProto.Request_Client request = SafeRoomProto.Request_Client.newBuilder()
@@ -324,10 +306,10 @@ public class ClientMenu{
 				.build();
 				
 			return blockingStub.getPendingFriendRequests(request);
-		} finally {
-			if (channel != null) {
-				channel.shutdown();
-			}
+		} catch (Exception e) {
+			System.err.println("Get pending friend requests hatası: " + e.getMessage());
+			e.printStackTrace();
+			throw e;
 		}
 	}
 
@@ -335,13 +317,8 @@ public class ClientMenu{
 	 * Gönderilen arkadaşlık isteklerini getir (giden istekler)
 	 */
 	public static SafeRoomProto.SentRequestsResponse getSentFriendRequests(String username) throws Exception {
-		ManagedChannel channel = null;
 		try {
-			channel = ManagedChannelBuilder.forAddress(Server, Port)
-				.usePlaintext()
-				.build();
-			
-			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(channel)
+			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
 				.withDeadlineAfter(10, TimeUnit.SECONDS);
 			
 			SafeRoomProto.Request_Client request = SafeRoomProto.Request_Client.newBuilder()
@@ -349,10 +326,10 @@ public class ClientMenu{
 				.build();
 				
 			return blockingStub.getSentFriendRequests(request);
-		} finally {
-			if (channel != null) {
-				channel.shutdown();
-			}
+		} catch (Exception e) {
+			System.err.println("Get sent friend requests hatası: " + e.getMessage());
+			e.printStackTrace();
+			throw e;
 		}
 	}
 
@@ -360,13 +337,8 @@ public class ClientMenu{
 	 * Arkadaşlık isteğini kabul et
 	 */
 	public static SafeRoomProto.Status acceptFriendRequest(int requestId, String username) throws Exception {
-		ManagedChannel channel = null;
 		try {
-			channel = ManagedChannelBuilder.forAddress(Server, Port)
-				.usePlaintext()
-				.build();
-			
-			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(channel)
+			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
 				.withDeadlineAfter(10, TimeUnit.SECONDS);
 			
 			SafeRoomProto.FriendRequestAction request = SafeRoomProto.FriendRequestAction.newBuilder()
@@ -375,10 +347,10 @@ public class ClientMenu{
 				.build();
 				
 			return blockingStub.acceptFriendRequest(request);
-		} finally {
-			if (channel != null) {
-				channel.shutdown();
-			}
+		} catch (Exception e) {
+			System.err.println("Accept friend request hatası: " + e.getMessage());
+			e.printStackTrace();
+			throw e;
 		}
 	}
 
@@ -386,13 +358,8 @@ public class ClientMenu{
 	 * Arkadaşlık isteğini reddet
 	 */
 	public static SafeRoomProto.Status rejectFriendRequest(int requestId, String username) throws Exception {
-		ManagedChannel channel = null;
 		try {
-			channel = ManagedChannelBuilder.forAddress(Server, Port)
-				.usePlaintext()
-				.build();
-			
-			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(channel)
+			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
 				.withDeadlineAfter(10, TimeUnit.SECONDS);
 			
 			SafeRoomProto.FriendRequestAction request = SafeRoomProto.FriendRequestAction.newBuilder()
@@ -401,10 +368,10 @@ public class ClientMenu{
 				.build();
 				
 			return blockingStub.rejectFriendRequest(request);
-		} finally {
-			if (channel != null) {
-				channel.shutdown();
-			}
+		} catch (Exception e) {
+			System.err.println("Reject friend request hatası: " + e.getMessage());
+			e.printStackTrace();
+			throw e;
 		}
 	}
 
@@ -412,13 +379,8 @@ public class ClientMenu{
 	 * Gönderilen arkadaşlık isteğini iptal et
 	 */
 	public static SafeRoomProto.Status cancelFriendRequest(int requestId, String username) throws Exception {
-		ManagedChannel channel = null;
 		try {
-			channel = ManagedChannelBuilder.forAddress(Server, Port)
-				.usePlaintext()
-				.build();
-			
-			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(channel)
+			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
 				.withDeadlineAfter(10, TimeUnit.SECONDS);
 			
 			SafeRoomProto.FriendRequestAction request = SafeRoomProto.FriendRequestAction.newBuilder()
@@ -427,10 +389,10 @@ public class ClientMenu{
 				.build();
 				
 			return blockingStub.cancelFriendRequest(request);
-		} finally {
-			if (channel != null) {
-				channel.shutdown();
-			}
+		} catch (Exception e) {
+			System.err.println("Cancel friend request hatası: " + e.getMessage());
+			e.printStackTrace();
+			throw e;
 		}
 	}
 
@@ -438,13 +400,8 @@ public class ClientMenu{
 	 * Arkadaş listesini getir
 	 */
 	public static SafeRoomProto.FriendsListResponse getFriendsList(String username) throws Exception {
-		ManagedChannel channel = null;
 		try {
-			channel = ManagedChannelBuilder.forAddress(Server, Port)
-				.usePlaintext()
-				.build();
-			
-			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(channel)
+			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
 				.withDeadlineAfter(10, TimeUnit.SECONDS);
 			
 			SafeRoomProto.Request_Client request = SafeRoomProto.Request_Client.newBuilder()
@@ -452,10 +409,10 @@ public class ClientMenu{
 				.build();
 				
 			return blockingStub.getFriendsList(request);
-		} finally {
-			if (channel != null) {
-				channel.shutdown();
-			}
+		} catch (Exception e) {
+			System.err.println("Get friends list hatası: " + e.getMessage());
+			e.printStackTrace();
+			throw e;
 		}
 	}
 
@@ -463,13 +420,8 @@ public class ClientMenu{
 	 * Arkadaşı kaldır
 	 */
 	public static SafeRoomProto.Status removeFriend(String user1, String user2) throws Exception {
-		ManagedChannel channel = null;
 		try {
-			channel = ManagedChannelBuilder.forAddress(Server, Port)
-				.usePlaintext()
-				.build();
-			
-			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(channel)
+			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
 				.withDeadlineAfter(10, TimeUnit.SECONDS);
 			
 			SafeRoomProto.RemoveFriendRequest request = SafeRoomProto.RemoveFriendRequest.newBuilder()
@@ -478,10 +430,10 @@ public class ClientMenu{
 				.build();
 				
 			return blockingStub.removeFriend(request);
-		} finally {
-			if (channel != null) {
-				channel.shutdown();
-			}
+		} catch (Exception e) {
+			System.err.println("Remove friend hatası: " + e.getMessage());
+			e.printStackTrace();
+			throw e;
 		}
 	}
 
@@ -489,13 +441,8 @@ public class ClientMenu{
 	 * Arkadaşlık istatistiklerini getir
 	 */
 	public static SafeRoomProto.FriendshipStatsResponse getFriendshipStats(String username) throws Exception {
-		ManagedChannel channel = null;
 		try {
-			channel = ManagedChannelBuilder.forAddress(Server, Port)
-				.usePlaintext()
-				.build();
-			
-			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(channel)
+			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
 				.withDeadlineAfter(10, TimeUnit.SECONDS);
 			
 			SafeRoomProto.Request_Client request = SafeRoomProto.Request_Client.newBuilder()
@@ -503,10 +450,10 @@ public class ClientMenu{
 				.build();
 				
 			return blockingStub.getFriendshipStats(request);
-		} finally {
-			if (channel != null) {
-				channel.shutdown();
-			}
+		} catch (Exception e) {
+			System.err.println("Get friendship stats hatası: " + e.getMessage());
+			e.printStackTrace();
+			throw e;
 		}
 	}
 
@@ -514,13 +461,8 @@ public class ClientMenu{
 	 * Heartbeat gönder
 	 */
 	public static SafeRoomProto.HeartbeatResponse sendHeartbeat(String username, String sessionId) throws Exception {
-		ManagedChannel channel = null;
 		try {
-			channel = ManagedChannelBuilder.forAddress(Server, Port)
-				.usePlaintext()
-				.build();
-			
-			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(channel)
+			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
 				.withDeadlineAfter(5, TimeUnit.SECONDS);
 			
 			SafeRoomProto.HeartbeatRequest request = SafeRoomProto.HeartbeatRequest.newBuilder()
@@ -529,10 +471,10 @@ public class ClientMenu{
 				.build();
 				
 			return blockingStub.sendHeartbeat(request);
-		} finally {
-			if (channel != null) {
-				channel.shutdown();
-			}
+		} catch (Exception e) {
+			System.err.println("Send heartbeat hatası: " + e.getMessage());
+			e.printStackTrace();
+			throw e;
 		}
 	}
 
@@ -540,13 +482,8 @@ public class ClientMenu{
 	 * User session'ını sonlandır
 	 */
 	public static SafeRoomProto.Status endUserSession(String username, String sessionId) throws Exception {
-		ManagedChannel channel = null;
 		try {
-			channel = ManagedChannelBuilder.forAddress(Server, Port)
-				.usePlaintext()
-				.build();
-			
-			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(channel)
+			UDPHoleGrpc.UDPHoleBlockingStub blockingStub = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
 				.withDeadlineAfter(5, TimeUnit.SECONDS);
 			
 			SafeRoomProto.HeartbeatRequest request = SafeRoomProto.HeartbeatRequest.newBuilder()
@@ -555,10 +492,10 @@ public class ClientMenu{
 				.build();
 				
 			return blockingStub.endUserSession(request);
-		} finally {
-			if (channel != null) {
-				channel.shutdown();
-			}
+		} catch (Exception e) {
+			System.err.println("End user session hatası: " + e.getMessage());
+			e.printStackTrace();
+			throw e;
 		}
 	}
 	
@@ -567,359 +504,21 @@ public class ClientMenu{
 	// ============================================
 	
 	/**
-	 * Register user with P2P signaling server on application startup
-	 * @param username Username to register
-	 * @return true if registration successful
+	 * Channel'ı düzgün bir şekilde kapatır
+	 * Uygulamadan çıkarken çağrılmalı
 	 */
-	public static boolean registerP2PUser(String username) {
-		try {
-			System.out.println("[P2P] Registering user with server: " + username);
-			
-			// Set current username in ChatService for message rendering
-			com.saferoom.gui.service.ChatService.getInstance().setCurrentUsername(username);
-			
-			InetSocketAddress signalingServer = new InetSocketAddress(Server, UDP_Port); // P2PSignalingServer.SIGNALING_PORT
-			boolean registered = NatAnalyzer.registerWithServer(username, signalingServer);
-			
-			if (registered) {
-				// Initialize reliable messaging protocol
-				System.out.println("[P2P] 🔧 Initializing reliable messaging protocol...");
-				NatAnalyzer.initializeReliableMessaging(username);
-				
-			// Set callback for received messages
-			NatAnalyzer.setReliableMessageCallback((sender, message) -> {
-				System.out.printf("[P2P-CALLBACK] 📨 Received from %s: \"%s\"%n", sender, message);
-				
-				// Skip messages from ourselves (we add them manually)
-				if (sender.equals(username)) {
-					System.out.println("[P2P-CALLBACK] ⏭️ Skipping self-sent message");
-					return;
-				}
-				
-				// Forward to ChatService GUI
-				javafx.application.Platform.runLater(() -> {
-					try {
-						com.saferoom.gui.service.ChatService.getInstance()
-							.receiveP2PMessage(sender, username, message);
-					} catch (Exception e) {
-						System.err.println("[P2P-CALLBACK] Error forwarding to GUI: " + e.getMessage());
-					}
-				});
-			});				System.out.println("[P2P] ✅ Reliable messaging initialized for: " + username);
-				
-				// 📁 Set callback for incoming file transfers
-				System.out.println("[P2P] 🔧 Registering file transfer callback...");
-				NatAnalyzer.setFileTransferCallback(new NatAnalyzer.FileTransferCallback() {
-					@Override
-					public void onFileTransferRequest(String sender, long fileId, String fileName, long fileSize, int totalChunks) {
-						System.out.printf("[P2P-FILE-CALLBACK] 📁 Incoming file from %s: %s (%d bytes)%n", 
-							sender, fileName, fileSize);
-						
-						// Show FileTransferDialog on JavaFX thread
-						javafx.application.Platform.runLater(() -> {
-							try {
-								com.saferoom.gui.dialog.FileTransferDialog dialog = 
-									new com.saferoom.gui.dialog.FileTransferDialog(
-										sender, 
-										fileId,
-										fileName, 
-										fileSize
-									);
-								
-								java.util.Optional<java.nio.file.Path> result = dialog.showAndWait();
-								
-								if (result.isPresent()) {
-									// User accepted - call NatAnalyzer.acceptFileTransfer()
-									java.nio.file.Path savePath = result.get();
-									System.out.printf("[P2P-FILE-CALLBACK] ✅ User accepted file - saving to: %s%n", 
-										savePath);
-									
-									// Accept file transfer
-									NatAnalyzer.acceptFileTransfer(sender, fileId, savePath);
-									
-									// Show success message in chat
-									com.saferoom.gui.service.ChatService.getInstance()
-										.receiveP2PMessage(
-											sender, 
-											username, 
-											String.format("📎 Receiving file: %s", fileName)
-										);
-									
-								} else {
-									// User declined
-									System.out.printf("[P2P-FILE-CALLBACK] ❌ User declined file from %s%n", sender);
-									
-									// TODO: Send rejection notification to sender
-								}
-								
-							} catch (Exception e) {
-								System.err.println("[P2P-FILE-CALLBACK] Error showing file dialog: " + e.getMessage());
-								e.printStackTrace();
-							}
-						});
-					}
-					
-				@Override
-				public void onFileTransferComplete(String peer, long fileId, java.nio.file.Path filePath) {
-					System.out.printf("[P2P-FILE-CALLBACK] ✅ File transfer complete: %s%n", filePath);
-					
-					String confirmationMessage = String.format("✅ File received: %s", filePath.getFileName());
-					
-					// Add to our GUI as outgoing message FIRST (before sending P2P)
-					javafx.application.Platform.runLater(() -> {
-						try {
-							com.saferoom.gui.model.Message outgoingMsg = new com.saferoom.gui.model.Message(
-								confirmationMessage,
-								username, // I'm the sender of this confirmation
-								username.isEmpty() ? "?" : username.substring(0, 1).toUpperCase()
-							);
-							
-							com.saferoom.gui.service.ChatService.getInstance()
-								.getMessagesForChannel(peer)
-								.add(outgoingMsg);
-							
-							// Update contact service (outgoing message)
-							com.saferoom.gui.service.ContactService.getInstance()
-								.updateLastMessage(peer, confirmationMessage, true);
-							
-							System.out.printf("[P2P-FILE-CALLBACK] ✅ Confirmation added to GUI (outgoing)%n");
-						} catch (Exception e) {
-							System.err.println("[P2P-FILE-CALLBACK] GUI update error: " + e.getMessage());
-						}
-					});
-					
-					// Then send via P2P (sender will receive it as incoming)
-					try {
-						com.saferoom.natghost.NatAnalyzer.sendReliableMessage(peer, confirmationMessage);
-						System.out.printf("[P2P-FILE-CALLBACK] 📤 Sent confirmation to %s via P2P%n", peer);
-					} catch (Exception e) {
-						System.err.println("[P2P-FILE-CALLBACK] P2P send error: " + e.getMessage());
-					}
-				}					@Override
-					public void onFileTransferError(String peer, long fileId, Exception error) {
-						System.err.printf("[P2P-FILE-CALLBACK] ❌ File transfer error: %s%n", error.getMessage());
-						
-						javafx.application.Platform.runLater(() -> {
-							javafx.scene.control.Alert alert = new javafx.scene.control.Alert(
-								javafx.scene.control.Alert.AlertType.ERROR);
-							alert.setTitle("File Transfer Error");
-							alert.setHeaderText("File Transfer Failed");
-							alert.setContentText(error.getMessage());
-							alert.show();
-					});
-				}
-				
-				@Override
-				public void onFileTransferProgress(String peer, long fileId, int current, int total) {
-					// Log every chunk (for debugging)
-					System.out.printf("[P2P-FILE-CALLBACK] 📊 Progress: %d/%d chunks%n", current, total);
-					
-					// Update GUI only at 25%, 50%, 75% milestones
-					int progressPercent = (current * 100) / total;
-					int lastMilestone = ((current - 1) * 100) / total;
-					
-					// Check if we just crossed a 25% milestone
-					if (progressPercent / 25 > lastMilestone / 25) {
-						javafx.application.Platform.runLater(() -> {
-							String progressMsg = String.format("⏳ Progress: %d%% (%d/%d chunks)", 
-								progressPercent, current, total);
-							System.out.printf("[P2P-FILE-CALLBACK] � Milestone: %s%n", progressMsg);
-							// Note: Not adding to chat to avoid spam
-							// Could add a single progress message and update it (advanced UI)
-						});
-					}
-				}
-			});				System.out.println("[P2P] ✅ File transfer callback registered");
+	public static void shutdownChannel() {
+		if (STUB_CHANNEL != null && !STUB_CHANNEL.isShutdown()) {
+			try {
+				System.out.println("gRPC channel kapatılıyor...");
+				STUB_CHANNEL.shutdown().awaitTermination(5, TimeUnit.SECONDS);
+				System.out.println("gRPC channel başarıyla kapatıldı");
+			} catch (InterruptedException e) {
+				System.err.println("Channel kapatılırken hata: " + e.getMessage());
+				STUB_CHANNEL.shutdownNow();
+				Thread.currentThread().interrupt();
 			}
-			
-			return registered;
-			
-		} catch (Exception e) {
-			System.err.println("[P2P] Error during user registration: " + e.getMessage());
-			e.printStackTrace();
-			return false;
 		}
-	}
-	
-	/**
-	 * 🆕 ASYNC NON-BLOCKING P2P Connection Request
-	 * Start hole punch asynchronously and return CompletableFuture
-	 * 
-	 * @param myUsername Current user's username
-	 * @param targetUsername Target user to connect to
-	 * @return CompletableFuture<Boolean> that completes when P2P establishes
-	 */
-	public static java.util.concurrent.CompletableFuture<Boolean> startP2PHolePunchAsync(String myUsername, String targetUsername) {
-		try {
-			System.out.println("[P2P] 🚀 Initiating ASYNC P2P request: " + myUsername + " -> " + targetUsername);
-			
-			// Create signaling server address
-			InetSocketAddress signalingServer = new InetSocketAddress(Server, UDP_Port);
-			
-			// Use new async unidirectional P2P request system
-			return NatAnalyzer.requestP2PConnectionAsync(myUsername, targetUsername, signalingServer)
-				.thenApply(success -> {
-					if (success) {
-						System.out.println("[P2P] ✅ Async P2P connection successful");
-					} else {
-						System.out.println("[P2P] ❌ Async P2P failed - will use server relay");
-					}
-					return success;
-				})
-				.exceptionally(e -> {
-					System.err.println("[P2P] ❌ Error during async P2P: " + e.getMessage());
-					return false;
-				});
-			
-		} catch (Exception e) {
-			System.err.println("[P2P] ❌ Error initializing async P2P: " + e.getMessage());
-			e.printStackTrace();
-			return java.util.concurrent.CompletableFuture.completedFuture(false);
-		}
-	}
-	
-	/**
-	 * 🔴 DEPRECATED - Start P2P hole punching process with target user (BLOCKING VERSION)
-	 * Use startP2PHolePunchAsync() instead to avoid ForkJoinPool exhaustion
-	 * 
-	 * @param myUsername Current user's username
-	 * @param targetUsername Target user to connect to
-	 * @return true if hole punch successful, false if should use server relay
-	 * @deprecated Use {@link #startP2PHolePunchAsync(String, String)} instead
-	 */
-	@Deprecated
-	public static boolean startP2PHolePunch(String myUsername, String targetUsername) {
-		try {
-			System.out.println("[P2P] Initiating UNIDIRECTIONAL P2P request: " + myUsername + " -> " + targetUsername);
-			
-			// Create signaling server address - use correct P2P signaling port
-			InetSocketAddress signalingServer = new InetSocketAddress(Server, UDP_Port); // P2PSignalingServer.SIGNALING_PORT
-			
-			// Use new unidirectional P2P request system
-			boolean success = NatAnalyzer.requestP2PConnection(myUsername, targetUsername, signalingServer);
-			
-			if (success) {
-				System.out.println("[P2P] ✅ Unidirectional P2P connection successful");
-				return true;
-			} else {
-				System.out.println("[P2P] ❌ Unidirectional P2P failed - will use server relay");
-				return false;
-			}
-			
-		} catch (Exception e) {
-			System.err.println("[P2P] Error during unidirectional P2P: " + e.getMessage());
-			e.printStackTrace();
-			return false;
-		}
-	}
-	
-	/**
-	 * Legacy hole punch method for backward compatibility
-	 * @param myUsername Current user's username
-	 * @param targetUsername Target user to connect to
-	 * @return true if hole punch successful, false if should use server relay
-	 */
-	public static boolean startLegacyP2PHolePunch(String myUsername, String targetUsername) {
-		try {
-			System.out.println("[P2P] Initiating LEGACY hole punch: " + myUsername + " -> " + targetUsername);
-			
-			// Create signaling server address - use correct P2P signaling port
-			InetSocketAddress signalingServer = new InetSocketAddress(Server, UDP_Port); // P2PSignalingServer.SIGNALING_PORT
-			
-			// Perform hole punch using NatAnalyzer (old method)
-			boolean success = NatAnalyzer.performHolePunch(myUsername, targetUsername, signalingServer);
-			
-			if (success) {
-				System.out.println("[P2P] ✅ Legacy hole punch successful - P2P connection established");
-				return true;
-			} else {
-				System.out.println("[P2P] ❌ Legacy hole punch failed - will use server relay");
-				return false;
-			}
-			
-		} catch (Exception e) {
-			System.err.println("[P2P] Error during legacy hole punch: " + e.getMessage());
-			e.printStackTrace();
-			return false;
-		}
-	}
-	
-	/**
-	 * Analyze NAT type for current network
-	 * @return NAT type: 0x00=Full Cone/Restricted, 0x11=Symmetric, 0xFE=Error
-	 */
-	public static byte analyzeNAT() {
-		try {
-			System.out.println("[P2P] Analyzing NAT type...");
-			byte natType = NatAnalyzer.analyzeSinglePort(NatAnalyzer.stunServers);
-			
-			String natTypeStr = switch (natType) {
-				case (byte)0x00 -> "Full Cone/Restricted NAT (P2P Friendly)";
-				case (byte)0x11 -> "Symmetric NAT (P2P Challenging)";
-				case (byte)0xFE -> "NAT Analysis Failed";
-				default -> "Unknown NAT Type";
-			};
-			
-			System.out.println("[P2P] NAT Type: " + natTypeStr);
-			return natType;
-			
-		} catch (Exception e) {
-			System.err.println("[P2P] NAT analysis error: " + e.getMessage());
-			return (byte)0xFE;
-		}
-	}
-	
-	/**
-	 * Get current public IP and port info
-	 * @return String array [publicIP, publicPort, natType] or null if failed
-	 */
-	public static String[] getPublicInfo() {
-		try {
-			byte natType = analyzeNAT();
-			if (natType == (byte)0xFE || NatAnalyzer.myPublicIP == null || NatAnalyzer.Public_PortList.isEmpty()) {
-				return null;
-			}
-			
-			return new String[] {
-				NatAnalyzer.myPublicIP,
-				String.valueOf(NatAnalyzer.Public_PortList.get(0)),
-				String.format("0x%02X", natType)
-			};
-			
-		} catch (Exception e) {
-			System.err.println("[P2P] Error getting public info: " + e.getMessage());
-			return null;
-		}
-	}
-	
-	/**
-	 * Send P2P message if connection is active with specific peer
-	 * @param sender Current user's username
-	 * @param receiver Target user's username  
-	 * @param message Text message to send
-	 * @return true if sent via P2P, false if should use server relay
-	 */
-	public static boolean sendP2PMessage(String sender, String receiver, String message) {
-		if (NatAnalyzer.isP2PActive(receiver)) {
-			return NatAnalyzer.sendP2PMessage(sender, receiver, message);
-		} else {
-			System.out.printf("[P2P] No active P2P connection with %s - use server relay%n", receiver);
-			return false;
-		}
-	}
-	
-	/**
-	 * Check if P2P messaging is available with specific peer
-	 */
-	public static boolean isP2PMessagingAvailable(String username) {
-		return NatAnalyzer.isP2PActive(username);
-	}
-	
-	/**
-	 * Check if any P2P messaging is available
-	 */
-	public static boolean isP2PMessagingAvailable() {
-		return NatAnalyzer.isP2PActive();
 	}
 
 }

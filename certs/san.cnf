@@ -1,0 +1,18 @@
+[req]
+distinguished_name=req_distinguished_name
+req_extensions=v3_req
+prompt=no
+
+[req_distinguished_name]
+C=TR
+ST=Ankara
+L=Ankara
+O=NovaSafer Tech. Inc.
+OU=Backend
+CN=68.64.198.35.bc.googleusercontent.com
+
+[v3_req]
+subjectAltName=@alt_names
+
+[alt_names]
+DNS.1=68.64.198.35.bc.googleusercontent.com
