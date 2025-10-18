@@ -9,10 +9,12 @@ ST=Ankara
 L=Ankara
 O=NovaSafer Tech. Inc.
 OU=Backend
-CN=68.64.198.35.bc.googleusercontent.com
+CN=35.198.64.68
 
 [v3_req]
 subjectAltName=@alt_names
 
 [alt_names]
-DNS.1=68.64.198.35.bc.googleusercontent.com
+IP.1=35.198.64.68
+DNS.1=35.198.64.68
+DNS.2=localhost
