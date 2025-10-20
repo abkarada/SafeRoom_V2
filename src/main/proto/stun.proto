@@ -74,12 +74,13 @@ message P2PInitResponse {
 
 message ICECandidate {
     string foundation = 1;
-    int32 priority = 2;
-    string ip = 3;
-    int32 port = 4;
-    string type = 5;
-    string relatedAddress = 6;
-    int32 relatedPort = 7;
+    string component = 2;
+    string protocol = 3;
+    string ip = 4;
+    int32 port = 5;
+    int64 priority = 6;
+    string type = 7;
+    string mediaType = 8;
 }
 
 message ICECandidateTrickle {

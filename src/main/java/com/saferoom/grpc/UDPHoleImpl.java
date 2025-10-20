@@ -4,6 +4,8 @@ import java.sql.SQLException;
 
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import com.saferoom.server.P2PSessionManager;
 import com.saferoom.server.P2PSessionManager.P2PSession; // BU EKSİK OLABİLİR
@@ -32,6 +34,8 @@ import java.sql.Timestamp;
 import io.grpc.stub.StreamObserver;
 
 public class UDPHoleImpl extends UDPHoleGrpc.UDPHoleImplBase {
+
+        private static final Logger LOGGER = Logger.getLogger(UDPHoleImpl.class.getName());
 	
 	@Override
 	public void menuAns(Menu request, StreamObserver<Status> response){
@@ -939,10 +943,16 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
         String fromUser = request.getFromUser();
         SafeRoomProto.ICECandidate candidate = request.getCandidate();
         
-        System.out.println("ICE Candidate received:");
-        System.out.println("  Session: " + sessionId);
-        System.out.println("  From: " + fromUser);
-        System.out.println("  Candidate: " + candidate.getIp() + ":" + candidate.getPort() + " (" + candidate.getType() + ")");
+        String ipVersion = (candidate.getIp() != null && candidate.getIp().contains(":")) ? "IPv6" : "IPv4";
+        LOGGER.log(Level.INFO, () -> String.format(
+            "ICE candidate received from %s [%s] for session %s: %s:%d (%s/%s)",
+            fromUser,
+            ipVersion,
+            sessionId,
+            candidate.getIp(),
+            candidate.getPort(),
+            candidate.getProtocol(),
+            candidate.getType()));
         
         boolean success = P2PSessionManager.addCandidate(sessionId, fromUser, candidate);
         
@@ -1002,28 +1012,34 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 
                 try {
                     if (request.hasCandidate()) {
-                        boolean success = P2PSessionManager.addCandidate(sessionId, username, request.getCandidate());
+                        SafeRoomProto.ICECandidate candidate = request.getCandidate();
+                        boolean success = P2PSessionManager.addCandidate(sessionId, username, candidate);
+                        if (success) {
+                            String ipVersion = (candidate.getIp() != null && candidate.getIp().contains(":")) ? "IPv6" : "IPv4";
+                            LOGGER.log(Level.FINE, () -> String.format(
+                                "Trickled %s candidate from %s in session %s", ipVersion, username, sessionId));
+                        }
                         if (!success) {
-                            System.err.println("Failed to store ICE candidate for session " + sessionId);
+                            LOGGER.log(Level.WARNING, "Failed to store ICE candidate for session {0}", sessionId);
                         }
                     } else if (request.hasGathering()) {
                         if (request.getGathering().getComplete()) {
                             boolean success = P2PSessionManager.markGatheringComplete(sessionId, username);
                             if (!success) {
-                                System.err.println("Failed to mark gathering complete for session " + sessionId);
+                                LOGGER.log(Level.WARNING, "Failed to mark gathering complete for session {0}", sessionId);
                             }
                         }
                     } else if (request.hasRestart()) {
                         P2PSessionManager.notifyRestart(sessionId, username, request.getRestart());
                     }
                 } catch (Exception e) {
-                    System.err.println("Error handling ICE stream message: " + e.getMessage());
+                    LOGGER.log(Level.SEVERE, "Error handling ICE stream message", e);
                 }
             }
 
             @Override
             public void onError(Throwable t) {
-                System.err.println("ICE stream error for " + username + ": " + t.getMessage());
+                LOGGER.log(Level.WARNING, () -> String.format("ICE stream error for %s: %s", username, t.getMessage()));
                 if (registered) {
                     P2PSessionManager.unregisterStreamObserver(sessionId, username);
                 }
