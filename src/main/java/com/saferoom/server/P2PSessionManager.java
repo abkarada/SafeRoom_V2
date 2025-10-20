@@ -288,7 +288,8 @@ public class P2PSessionManager {
                 sessions.entrySet().removeIf(entry -> {
                     boolean isOld = (now - entry.getValue().createdAt) > 30 * 60 * 1000;
                     if (isOld) {
-                        System.out.println("Cleaning old P2P session: " + entry.getKey());
+                        streamObservers.remove(entry.getKey());
+                        System.out.println("Cleaned old session " + entry.getKey());
                     }
                     return isOld;
                 });
