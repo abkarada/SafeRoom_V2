@@ -108,22 +108,6 @@ public class P2PSessionManager {
         return true;
     }
 
-    public static List<SafeRoomProto.ICECandidate> pollCandidates(String sessionId, String username, int lastIndex) {
-        P2PSession session = sessions.get(sessionId);
-        if (session == null) {
-            return Collections.emptyList();
-        }
-        
-        String otherUser = session.getOtherUser(username);
-        UserICEInfo otherInfo = session.userICEInfos.get(otherUser);
-        
-        if (otherInfo == null) {
-            return Collections.emptyList();
-        }
-        
-        return otherInfo.getCandidatesFrom(lastIndex);
-    }
-    
     public static boolean markGatheringComplete(String sessionId, String username) {
         P2PSession session = sessions.get(sessionId);
         if (session == null) {
@@ -139,18 +123,6 @@ public class P2PSessionManager {
         System.out.println("ICE gathering complete for " + username + " in session " + sessionId);
         notifyGatheringComplete(session, username);
         return true;
-    }
-    
-    public static boolean isRemoteGatheringComplete(String sessionId, String username) {
-        P2PSession session = sessions.get(sessionId);
-        if (session == null) {
-            return false;
-        }
-        
-        String otherUser = session.getOtherUser(username);
-        UserICEInfo otherInfo = session.userICEInfos.get(otherUser);
-        
-        return otherInfo != null && otherInfo.gatheringComplete;
     }
     
     public static P2PSession getSession(String sessionId) {
@@ -316,6 +288,7 @@ public class P2PSessionManager {
                 sessions.entrySet().removeIf(entry -> {
                     boolean isOld = (now - entry.getValue().createdAt) > 30 * 60 * 1000;
                     if (isOld) {
+                        streamObservers.remove(entry.getKey());
                         System.out.println("Cleaning old P2P session: " + entry.getKey());
                     }
                     return isOld;
