@@ -21,8 +21,6 @@ rpc GetProfile(ProfileRequest) returns (ProfileResponse);
 
 rpc SendFriendRequest(FriendRequest) returns (FriendResponse);
 
-rpc RegisterClient(Stun_Info) returns (Status);
-
 rpc GetPendingFriendRequests(Request_Client) returns (PendingRequestsResponse);
 
 rpc GetSentFriendRequests(Request_Client) returns (SentRequestsResponse);
@@ -43,37 +41,76 @@ rpc SendHeartbeat(HeartbeatRequest) returns (HeartbeatResponse);
 
 rpc EndUserSession(HeartbeatRequest) returns (Status);
 
-rpc GetStunInfo(Request_Client) returns (Stun_Info);
+// P2P bağlantısı başlatma (online kontrolü dahil)
+rpc InitiateP2PConnection(P2PInitRequest) returns (P2PInitResponse);
+    
+// Tek bir ICE candidate gönderme (trickle)
+rpc SendICECandidate(ICECandidateTrickle) returns (Status);
+    
+// Karşı tarafın candidate'lerini poll et
+rpc PollICECandidates(ICEPollRequest) returns (ICEPollResponse);
+    
+// ICE gathering tamamlandı sinyali
+rpc ICEGatheringComplete(ICECompleteRequest) returns (Status);
+    
+// P2P session'ı sonlandır
+rpc TerminateP2PSession(P2PTerminateRequest) returns (Status);
 
-rpc PunchTest(FromTo) returns (Status);
+}
 
-rpc HandShake(HandshakeConfirm) returns (Status);
+message P2PInitRequest {
+    string fromUser = 1;
+    string toUser = 2;
+}
 
-rpc HeartBeat(Stun_Info) returns (Status);
+message P2PInitResponse {
+    bool success = 1;
+    string message = 2;
+    string sessionId = 3;
+}
 
-rpc Finish(Request_Client) returns (Status);
+message ICECandidate {
+    string foundation = 1;
+    int32 priority = 2;
+    string ip = 3;
+    int32 port = 4;
+    string type = 5;
+    string relatedAddress = 6;
+    int32 relatedPort = 7;
+}
 
-rpc GetServerPublicKey(Empty) returns (PublicKeyMessage);
+message ICECandidateTrickle {
+    string sessionId = 1;
+    string fromUser = 2;
+    ICECandidate candidate = 3;
+}
 
-rpc SendEncryptedAESKey(EncryptedAESKeyMessage) returns (Status);
+message ICEPollRequest {
+    string sessionId = 1;
+    string username = 2;
+    int32 lastCandidateIndex = 3;
+}
 
-rpc GetEncryptedAESKey(RequestByClient_ID) returns (EncryptedAESKeyMessage);
+message ICEPollResponse {
+    bool success = 1;
+    repeated ICECandidate candidates = 2;
+    bool gatheringComplete = 3;
+}
 
-rpc SendEncryptedMessage(EncryptedPacket) returns (Status);
+message ICECompleteRequest {
+    string sessionId = 1;
+    string username = 2;
+}
 
-rpc DecryptedMessage(EncryptedPacket) returns (DecryptedPacket);
-
-rpc SendPublicKey(SendPublicKeyRequest) returns (Status);
-
-rpc GetPublicKey(RequestByClient_ID) returns (PublicKeyMessage);
-
+message P2PTerminateRequest {
+    string sessionId = 1;
+    string username = 2;
 }
 
 message Menu {
 	optional string username = 1;
 	optional string hash_password = 2;
 }
-
 
 message Create_User {
 	string username = 1;
@@ -87,27 +124,9 @@ message Verification {
 	optional string username = 1;
 	optional string verify = 2;
 }
-message Stun_Info{
-  string username = 1;
-  string ip = 2;
-  int32 port = 3;
-  optional bool state = 4;
-}
-
 
 message Request_Client {
     string username = 1;
-}
-
-message HandshakeConfirm {
-  string client_id = 1;
-  string target_id = 2;
-  int64 timestamp = 3;
-}
-
-message RelayInfo {
-  string relay_ip = 1;
-  int32 relay_port = 2;
 }
 
 message FromTo{
@@ -115,47 +134,17 @@ message FromTo{
     string them = 2;
 }
 
-message SendPublicKeyRequest {
-  string base64_pubkey = 1;
-  string session_ID = 2;
-  string starter = 3;
-  string joiner = 4;
-}
-
 message Status {
   string message = 1;
   optional int32 code = 2; // 0 = OK, 1 = NOT_FOUND, 2 = ERROR, vs.
 }
 
-message PublicKeyMessage {
-  string base64_key = 1;
-  string username = 2;
-}
 
 message RequestByClient_ID {
 	string client_id = 1;
 }
 
 message Empty {}
-
-message EncryptedAESKeyMessage {
-  string client_id = 1;
-  string encrypted_key = 2;
-  
-}
-
-message EncryptedPacket {
-  string sender = 1;
-  string receiver = 2;
-  string payload = 3; // Base64 AES şifreli veri
-}
-
-message DecryptedPacket{
- string sendedBy = 1;
- string recvedBy = 2;
- string plaintext = 3;
-
-}
 
 message SearchRequest {
     string searchTerm = 1;

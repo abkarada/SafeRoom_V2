@@ -1,18 +1,16 @@
 package com.saferoom.grpc;
 
 import java.sql.SQLException;
-import java.util.Base64;
 
 import java.util.List;
 import java.util.Map;
 
-import com.saferoom.crypto.KeyExchange;
+import com.saferoom.server.P2PSessionManager;
+import com.saferoom.server.P2PSessionManager.P2PSession; // BU EKSİK OLABİLİR
 import com.saferoom.crypto.VerificationCodeGenerator;
-import com.saferoom.grpc.SafeRoomProto.FromTo;
 import com.saferoom.grpc.SafeRoomProto.Menu;
 import com.saferoom.grpc.SafeRoomProto.Request_Client;
 import com.saferoom.grpc.SafeRoomProto.Status;
-import com.saferoom.grpc.SafeRoomProto.Stun_Info;
 import com.saferoom.grpc.SafeRoomProto.Verification;
 import com.saferoom.grpc.SafeRoomProto.Create_User;
 import com.saferoom.grpc.SafeRoomProto.SearchRequest;
@@ -20,7 +18,6 @@ import com.saferoom.grpc.SafeRoomProto.SearchResponse;
 import com.saferoom.grpc.SafeRoomProto.UserResult;
 import com.saferoom.db.*;
 import com.saferoom.email.EmailSender;
-import com.saferoom.sessions.*;
 import com.saferoom.grpc.SafeRoomProto.ProfileRequest;
 import com.saferoom.grpc.SafeRoomProto.ProfileResponse;
 import com.saferoom.grpc.SafeRoomProto.UserProfile;
@@ -189,19 +186,6 @@ public class UDPHoleImpl extends UDPHoleGrpc.UDPHoleImplBase {
 	}
 	
 	@Override
-	public void registerClient(Stun_Info request, StreamObserver<Status> responseObserver) {
-	    SessionManager.registerPeer(request.getUsername(), request); 
-
-	    Status response = Status.newBuilder()
-	        .setMessage("Client Registered")
-	        .setCode(0)
-	        .build();
-
-	    responseObserver.onNext(response);
-	    responseObserver.onCompleted();
-	}
-	
-	@Override
 	public void verifyEmail(Request_Client req, StreamObserver<Status> responseObserver){
 		String candicate_email = req.getUsername();
 		Status response = null;
@@ -294,22 +278,6 @@ public class UDPHoleImpl extends UDPHoleGrpc.UDPHoleImplBase {
 		}
 		
 		responseObserver.onCompleted();
-	}
-	@Override
-	public void getStunInfo(Request_Client request, StreamObserver<Stun_Info> responseObserver) {
-	    String username = request.getUsername();
-	    Stun_Info peerInfo = SessionManager.getPeer(username); 
-
-	    if (peerInfo != null) {
-	        responseObserver.onNext(peerInfo);
-	    } else {
-	        responseObserver.onNext(Stun_Info.newBuilder()
-	            .setUsername(username)
-	            .setState(false)
-	            .build());
-	    }
-
-	    responseObserver.onCompleted();
 	}
 
 	@Override
@@ -524,91 +492,6 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
         responseObserver.onCompleted();
     }
 }
-
-	@Override
-	public void punchTest(FromTo request, StreamObserver<Status> responseObserver) {
-	    Stun_Info targetInfo = SessionManager.getPeer(request.getThem());
-
-	    Status.Builder responseBuilder = Status.newBuilder();
-	    if (targetInfo != null) {
-	        responseBuilder.setMessage("Target peer found. Ready to punch.");
-	        responseBuilder.setCode(0);
-	    } else {
-	        responseBuilder.setMessage("Target peer not found.");
-	        responseBuilder.setCode(1);
-	    }
-
-	    responseObserver.onNext(responseBuilder.build());
-	    responseObserver.onCompleted();
-	}
-
-	
-	@Override
-	public void handShake(SafeRoomProto.HandshakeConfirm request, StreamObserver<SafeRoomProto.Status> responseObserver) {
-	    String client = request.getClientId();
-	    String target = request.getTargetId();
-	    long time = request.getTimestamp();
-
-	    System.out.println("[HANDSHAKE] " + client + " ↔ " + target + " @ " + time);
-
-	    SafeRoomProto.Status response = SafeRoomProto.Status.newBuilder()
-	        .setMessage("Handshake logged successfully.")
-	        .setCode(0)
-	        .build();
-
-	    responseObserver.onNext(response);
-	    responseObserver.onCompleted();
-	}	    
-
-	@Override
-	public void heartBeat(Stun_Info request, StreamObserver<Status> responseObserver) {
-	    String username = request.getUsername();
-
-	    Status status;
-	    if (SessionManager.hasPeer(username)) {
-	        System.out.println("[HEARTBEAT] Aktif: " + username);
-	        status = Status.newBuilder()
-	                .setMessage("Peer is active.")
-	                .setCode(0)
-	                .build();
-	    } else {
-	        System.out.println("[HEARTBEAT] Peer not found: " + username);
-	        status = Status.newBuilder()
-	                .setMessage("Peer not found.")
-	                .setCode(1)
-	                .build();
-	    }
-
-	    responseObserver.onNext(status);
-	    responseObserver.onCompleted();
-	}
-
-
-
-	@Override
-	public void finish(Request_Client request, StreamObserver<Status> responseObserver) {
-	    String username = request.getUsername();
-	    Stun_Info removed = SessionManager.getPeer(username);
-	    SessionManager.removePeer(username);
-
-	    Status status;
-	    if (removed != null) {
-	        System.out.println("[FINISH] Peer removed: " + username);
-	        status = Status.newBuilder()
-	                .setMessage("Peer successfully removed.")
-	                .setCode(0)
-	                .build();
-	    } else {
-	        System.out.println("[FINISH] Peer not found for removal: " + username);
-	        status = Status.newBuilder()
-	                .setMessage("Peer not found.")
-	                .setCode(1)
-	                .build();
-	    }
-
-	    responseObserver.onNext(status);
-	    responseObserver.onCompleted();
-	}
 
 	// ===============================
 	// FRIEND SYSTEM - EKSIK METODLAR
@@ -980,6 +863,162 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 				.build());
 			responseObserver.onCompleted();
 		}
-	}
+
+	}	
 	
+	// P2P METHODS
+	@Override
+	public void initiateP2PConnection(SafeRoomProto.P2PInitRequest request,
+                                     StreamObserver<SafeRoomProto.P2PInitResponse> responseObserver) {
+        
+	    String fromUser = request.getFromUser();
+		String toUser = request.getToUser();
+
+		System.out.println("P2P Connection Initiation: ");
+		System.out.println("From: " + fromUser);
+		System.out.println("To: " + toUser);
+
+		try{
+			
+			boolean isOnline = DBManager.isUserOnline(toUser);
+
+			if(!isOnline){
+				SafeRoomProto.P2PInitResponse response = SafeRoomProto.P2PInitResponse.newBuilder()
+						.setSuccess(false)
+						.setMessage("Target user is Offline")
+						.build();
+
+				responseObserver.onNext(response);
+				responseObserver.onCompleted();
+				return;
+			}
+
+			boolean areFriends = DBManager.areFriends(fromUser, toUser);
+
+			if(!areFriends){
+				SafeRoomProto.P2PInitResponse response = SafeRoomProto.P2PInitResponse.newBuilder()
+						.setSuccess(false)
+						.setMessage("User are not friends")
+						.build();
+
+					responseObserver.onNext(response);
+					responseObserver.onCompleted();
+					return;
+			}
+
+			  P2PSessionManager.P2PSession session = 
+             		 P2PSessionManager.createSession(fromUser, toUser);
+            
+            SafeRoomProto.P2PInitResponse response = SafeRoomProto.P2PInitResponse.newBuilder()
+                .setSuccess(true)
+                .setMessage("P2P session created")
+                .setSessionId(session.getSessionId())
+                .build();
+            
+            responseObserver.onNext(response);
+            responseObserver.onCompleted();
+
+
+		}catch(Exception e){
+			System.err.println("P2P Initiation Error: " + e);
+			SafeRoomProto.P2PInitResponse errorResponse = SafeRoomProto.P2PInitResponse.newBuilder()
+            .setSuccess(false)
+            .setMessage("Error: " + e.getMessage())
+            .build();
+        
+        responseObserver.onNext(errorResponse);
+        responseObserver.onCompleted();
+		}
+	}
+
+	 @Override
+    public void sendICECandidate(SafeRoomProto.ICECandidateTrickle request,
+                                StreamObserver<SafeRoomProto.Status> responseObserver) {
+        
+        String sessionId = request.getSessionId();
+        String fromUser = request.getFromUser();
+        SafeRoomProto.ICECandidate candidate = request.getCandidate();
+        
+        System.out.println("ICE Candidate received:");
+        System.out.println("  Session: " + sessionId);
+        System.out.println("  From: " + fromUser);
+        System.out.println("  Candidate: " + candidate.getIp() + ":" + candidate.getPort() + " (" + candidate.getType() + ")");
+        
+        boolean success = P2PSessionManager.addCandidate(sessionId, fromUser, candidate);
+        
+        SafeRoomProto.Status response = SafeRoomProto.Status.newBuilder()
+            .setMessage(success ? "Candidate added" : "Failed to add candidate")
+            .setCode(success ? 0 : 1)
+            .build();
+        
+        responseObserver.onNext(response);
+        responseObserver.onCompleted();
+    }
+    
+    @Override
+    public void pollICECandidates(SafeRoomProto.ICEPollRequest request,
+                                 StreamObserver<SafeRoomProto.ICEPollResponse> responseObserver) {
+        
+        String sessionId = request.getSessionId();
+        String username = request.getUsername();
+        int lastIndex = request.getLastCandidateIndex();
+        
+        List<SafeRoomProto.ICECandidate> newCandidates = 
+            P2PSessionManager.pollCandidates(sessionId, username, lastIndex);
+        
+        boolean remoteComplete = P2PSessionManager.isRemoteGatheringComplete(sessionId, username);
+        
+        SafeRoomProto.ICEPollResponse response = SafeRoomProto.ICEPollResponse.newBuilder()
+            .setSuccess(true)
+            .addAllCandidates(newCandidates)
+            .setGatheringComplete(remoteComplete)
+            .build();
+        
+        responseObserver.onNext(response);
+        responseObserver.onCompleted();
+    }
+    
+    @Override
+    public void iCEGatheringComplete(SafeRoomProto.ICECompleteRequest request,
+                                    StreamObserver<SafeRoomProto.Status> responseObserver) {
+        
+        String sessionId = request.getSessionId();
+        String username = request.getUsername();
+        
+        boolean success = P2PSessionManager.markGatheringComplete(sessionId, username);
+        
+        System.out.println("ICE Gathering Complete:");
+        System.out.println("  Session: " + sessionId);
+        System.out.println("  User: " + username);
+        
+        SafeRoomProto.Status response = SafeRoomProto.Status.newBuilder()
+            .setMessage(success ? "Gathering marked complete" : "Failed")
+            .setCode(success ? 0 : 1)
+            .build();
+        
+        responseObserver.onNext(response);
+        responseObserver.onCompleted();
+    }
+    
+    @Override
+    public void terminateP2PSession(SafeRoomProto.P2PTerminateRequest request,
+                                   StreamObserver<SafeRoomProto.Status> responseObserver) {
+        
+        String sessionId = request.getSessionId();
+        String username = request.getUsername();
+        
+        P2PSessionManager.removeSession(sessionId);
+        
+        System.out.println("P2P Session terminated by " + username + ": " + sessionId);
+        
+        SafeRoomProto.Status response = SafeRoomProto.Status.newBuilder()
+            .setMessage("Session terminated")
+            .setCode(0)
+            .build();
+        
+        responseObserver.onNext(response);
+        responseObserver.onCompleted();
+    }
+    
+
 }

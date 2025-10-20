@@ -12,6 +12,7 @@ targetCompatibility = '17'
 
 repositories {
     mavenCentral()
+    maven { url 'https://jitpack.io' }
     flatDir {
         dirs 'libs'
     }
@@ -42,9 +43,20 @@ dependencies {
     compileOnly 'org.apache.tomcat:annotations-api:6.0.53'
     implementation 'com.google.protobuf:protobuf-java:3.23.4'
 
+    // ICE4J - P2P NAT Traversal with full ICE implementation
+    implementation 'org.jitsi:ice4j:3.2-9-gb64c86f'
+    
+    // ICE4J dependencies
+    implementation 'org.jitsi:jitsi-utils:1.0-147-g12d0b20'
+    implementation 'org.jitsi:jicoco-config:1.1-161-g9e95588'
+    
+    // Bouncy Castle for encryption
+    implementation 'org.bouncycastle:bcprov-jdk15on:1.70'
+
     // Network & P2P
     implementation files('libs/jstun-0.7.4.jar')
-    implementation files('libs/weupnp-0.1.4.jar')
+    // weupnp ICE4J dependency'sinde zaten var, duplicate olmaması için exclude ediyoruz
+    // implementation files('libs/weupnp-0.1.4.jar')
 
     // Email
     implementation files('libs/javax.mail.jar')

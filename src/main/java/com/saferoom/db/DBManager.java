@@ -1201,6 +1201,32 @@ public class DBManager {
         return false;
     }
     
+		/**
+	 * İki kullanıcının arkadaş olup olmadığını kontrol eder
+	 * 
+	 * @param username1 İlk kullanıcı
+	 * @param username2 İkinci kullanıcı  
+	 * @return true ise arkadaşlar, false değilse
+	 */
+	public static boolean areFriends(String username1, String username2) throws SQLException {
+		String query = """
+			SELECT 1 FROM friendships 
+			WHERE (user1 = ? AND user2 = ?) OR (user1 = ? AND user2 = ?)
+			LIMIT 1
+		""";
+		
+		try (Connection conn = getConnection();
+			 PreparedStatement stmt = conn.prepareStatement(query)) {
+			
+			stmt.setString(1, username1);
+			stmt.setString(2, username2);
+			stmt.setString(3, username2);
+			stmt.setString(4, username1);
+			
+			ResultSet rs = stmt.executeQuery();
+			return rs.next();
+		}
+	}
     /**
      * Arkadaşlık istatistiklerini getir
      */

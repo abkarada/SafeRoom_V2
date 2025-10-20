@@ -7,11 +7,12 @@ import com.saferoom.grpc.UDPHoleGrpc;
 import com.saferoom.grpc.SafeRoomProto.Verification;
 import com.saferoom.server.SafeRoomServer;
 import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
 import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import io.grpc.netty.shaded.io.netty.handler.ssl.SslContext;
 import java.io.File;
+import java.util.Map;
+import java.util.HashMap;
 import java.util.concurrent.TimeUnit;
 
 public class ClientMenu{
@@ -20,6 +21,9 @@ public class ClientMenu{
 	public static int UDP_Port = SafeRoomServer.udpPort1;
 	private static String CERT_PATH = "certs/server.crt";
 	public static ManagedChannel STUB_CHANNEL;
+	
+	// P2P bağlantı yönetimi
+	private static Map<String, ICEManager> activeP2PConnections = new HashMap<>();
 
 	static{
 		try{
@@ -498,16 +502,12 @@ public class ClientMenu{
 			throw e;
 		}
 	}
-	
-	// ============================================
-	// P2P HOLE PUNCHING METHODS
-	// ============================================
-	
+
 	/**
 	 * Channel'ı düzgün bir şekilde kapatır
 	 * Uygulamadan çıkarken çağrılmalı
 	 */
-	public static void shutdownChannel() {
+		public static void shutdownChannel() {
 		if (STUB_CHANNEL != null && !STUB_CHANNEL.isShutdown()) {
 			try {
 				System.out.println("gRPC channel kapatılıyor...");
@@ -520,6 +520,105 @@ public class ClientMenu{
 			}
 		}
 	}
+	
+	// ============================================
+	// P2P HOLE PUNCHING METHODS
+	// ============================================
+
+	/**
+     * P2P bağlantısı başlat (Trickle ICE ile)
+     * 
+     * @param currentUser Mevcut kullanıcı
+     * @param targetUser Bağlanılacak kullanıcı
+     * @return ICEManager instance (başarılıysa)
+     * @throws Exception Bağlantı başarısız olursa
+     */
+    public static ICEManager startP2PConnection(String currentUser, String targetUser) throws Exception {
+        System.out.println("Starting P2P connection: " + currentUser + " -> " + targetUser);
+        
+        // Zaten bağlantı varsa onu döndür
+        if (activeP2PConnections.containsKey(targetUser)) {
+            ICEManager existing = activeP2PConnections.get(targetUser);
+            if (existing.isConnected()) {
+                System.out.println("Already connected to " + targetUser);
+                return existing;
+            } else {
+                // Bağlantı kopmuşsa kapat ve yeniden başlat
+                existing.close();
+                activeP2PConnections.remove(targetUser);
+            }
+        }
+        
+        // ICE Manager oluştur
+        ICEManager iceManager = new ICEManager(currentUser, targetUser, STUB_CHANNEL);
+        
+        // P2P bağlantısını başlat (STUN server olarak google stun server'ı kullan)
+        iceManager.initiateConnection("stun.l.google.com", 19302);
+        
+        // Bağlantı başarılı olana kadar bekle (max 30 saniye)
+        long startTime = System.currentTimeMillis();
+        while (!iceManager.isConnected() && (System.currentTimeMillis() - startTime) < 30000) {
+            Thread.sleep(100);
+        }
+        
+        if (iceManager.isConnected()) {
+            // Başarılı, aktif bağlantılara ekle
+            activeP2PConnections.put(targetUser, iceManager);
+            System.out.println("P2P connection established with " + targetUser);
+            return iceManager;
+        } else {
+            // Başarısız, temizle
+            iceManager.close();
+            throw new Exception("P2P connection timeout");
+        }
+    }
+    
+    /**
+     * P2P bağlantısını kapat
+     * 
+     * @param targetUser Bağlantısı kesilecek kullanıcı
+     */
+    public static void closeP2PConnection(String targetUser) {
+        ICEManager iceManager = activeP2PConnections.get(targetUser);
+        if (iceManager != null) {
+            iceManager.close();
+            activeP2PConnections.remove(targetUser);
+            System.out.println("P2P connection closed with " + targetUser);
+        }
+    }
+    
+    /**
+     * Belirli bir kullanıcıyla P2P bağlantısı var mı?
+     * 
+     * @param targetUser Kontrol edilecek kullanıcı
+     * @return true ise bağlı, false ise değil
+     */
+    public static boolean isP2PConnected(String targetUser) {
+        ICEManager iceManager = activeP2PConnections.get(targetUser);
+        return iceManager != null && iceManager.isConnected();
+    }
+    
+    /**
+     * Aktif P2P bağlantısını al
+     * 
+     * @param targetUser Bağlantısı alınacak kullanıcı
+     * @return ICEManager instance veya null
+     */
+    public static ICEManager getP2PConnection(String targetUser) {
+        return activeP2PConnections.get(targetUser);
+    }
+    
+    /**
+     * Tüm P2P bağlantılarını kapat
+     */
+    public static void closeAllP2PConnections() {
+        for (Map.Entry<String, ICEManager> entry : activeP2PConnections.entrySet()) {
+            entry.getValue().close();
+        }
+        activeP2PConnections.clear();
+        System.out.println("All P2P connections closed");
+    }
+    
 
 }
 
