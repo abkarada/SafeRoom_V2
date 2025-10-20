@@ -934,7 +934,7 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 	 @Override
     public void sendICECandidate(SafeRoomProto.ICECandidateTrickle request,
                                 StreamObserver<SafeRoomProto.Status> responseObserver) {
-        
+
         String sessionId = request.getSessionId();
         String fromUser = request.getFromUser();
         SafeRoomProto.ICECandidate candidate = request.getCandidate();
@@ -953,6 +953,90 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
         
         responseObserver.onNext(response);
         responseObserver.onCompleted();
+    }
+
+    @Override
+    public StreamObserver<SafeRoomProto.ICEStreamMessage> streamICE(
+        final StreamObserver<SafeRoomProto.ICEStreamMessage> responseObserver) {
+
+        return new StreamObserver<SafeRoomProto.ICEStreamMessage>() {
+            private String sessionId;
+            private String username;
+            private boolean registered;
+
+            private void ensureRegistered(SafeRoomProto.ICEStreamMessage request) {
+                if (registered) {
+                    return;
+                }
+
+                sessionId = request.getSessionId();
+                username = request.getFromUser();
+
+                if (sessionId == null || sessionId.isEmpty() ||
+                    username == null || username.isEmpty()) {
+                    responseObserver.onError(io.grpc.Status.INVALID_ARGUMENT
+                        .withDescription("Missing sessionId or fromUser")
+                        .asRuntimeException());
+                    return;
+                }
+
+                P2PSession session = P2PSessionManager.getSession(sessionId);
+                if (session == null) {
+                    responseObserver.onError(io.grpc.Status.NOT_FOUND
+                        .withDescription("Session not found")
+                        .asRuntimeException());
+                    return;
+                }
+
+                registered = true;
+                P2PSessionManager.registerStreamObserver(sessionId, username, responseObserver);
+            }
+
+            @Override
+            public void onNext(SafeRoomProto.ICEStreamMessage request) {
+                ensureRegistered(request);
+
+                if (!registered) {
+                    return;
+                }
+
+                try {
+                    if (request.hasCandidate()) {
+                        boolean success = P2PSessionManager.addCandidate(sessionId, username, request.getCandidate());
+                        if (!success) {
+                            System.err.println("Failed to store ICE candidate for session " + sessionId);
+                        }
+                    } else if (request.hasGathering()) {
+                        if (request.getGathering().getComplete()) {
+                            boolean success = P2PSessionManager.markGatheringComplete(sessionId, username);
+                            if (!success) {
+                                System.err.println("Failed to mark gathering complete for session " + sessionId);
+                            }
+                        }
+                    } else if (request.hasRestart()) {
+                        P2PSessionManager.notifyRestart(sessionId, username, request.getRestart());
+                    }
+                } catch (Exception e) {
+                    System.err.println("Error handling ICE stream message: " + e.getMessage());
+                }
+            }
+
+            @Override
+            public void onError(Throwable t) {
+                System.err.println("ICE stream error for " + username + ": " + t.getMessage());
+                if (registered) {
+                    P2PSessionManager.unregisterStreamObserver(sessionId, username);
+                }
+            }
+
+            @Override
+            public void onCompleted() {
+                if (registered) {
+                    P2PSessionManager.unregisterStreamObserver(sessionId, username);
+                }
+                responseObserver.onCompleted();
+            }
+        };
     }
     
     @Override

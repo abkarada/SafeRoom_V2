@@ -14,6 +14,7 @@ import java.io.File;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.concurrent.TimeUnit;
+import com.saferoom.client.ICEManager.TurnConfig;
 
 public class ClientMenu{
 	public static String Server = SafeRoomServer.ServerIP;
@@ -551,9 +552,12 @@ public class ClientMenu{
         
         // ICE Manager oluştur
         ICEManager iceManager = new ICEManager(currentUser, targetUser, STUB_CHANNEL);
-        
-        // P2P bağlantısını başlat (STUN server olarak google stun server'ı kullan)
-        iceManager.initiateConnection("stun.l.google.com", 19302);
+
+        // Opsiyonel TURN desteğini çevre değişkenlerinden yükle
+        TurnConfig turnConfig = TurnConfig.fromEnvironment();
+
+        // P2P bağlantısını başlat (STUN sunucusu olarak Google'ı varsayılan kullan)
+        iceManager.initiateConnection("stun.l.google.com", 19302, turnConfig);
         
         // Bağlantı başarılı olana kadar bekle (max 30 saniye)
         long startTime = System.currentTimeMillis();
