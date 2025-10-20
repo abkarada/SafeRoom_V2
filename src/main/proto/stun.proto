@@ -44,14 +44,17 @@ rpc EndUserSession(HeartbeatRequest) returns (Status);
 // P2P bağlantısı başlatma (online kontrolü dahil)
 rpc InitiateP2PConnection(P2PInitRequest) returns (P2PInitResponse);
     
-// Tek bir ICE candidate gönderme (trickle)
+// Tek bir ICE candidate gönderme (trickle) - Deprecated, yerine StreamICE kullan
 rpc SendICECandidate(ICECandidateTrickle) returns (Status);
-    
-// Karşı tarafın candidate'lerini poll et
+
+// Karşı tarafın candidate'lerini poll et - Deprecated, yerine StreamICE kullan
 rpc PollICECandidates(ICEPollRequest) returns (ICEPollResponse);
-    
-// ICE gathering tamamlandı sinyali
+
+// ICE gathering tamamlandı sinyali - Deprecated, yerine StreamICE kullan
 rpc ICEGatheringComplete(ICECompleteRequest) returns (Status);
+
+// Trickle ICE için çift yönlü streaming kanal
+rpc StreamICE(stream ICEStreamMessage) returns (stream ICEStreamMessage);
     
 // P2P session'ı sonlandır
 rpc TerminateP2PSession(P2PTerminateRequest) returns (Status);
@@ -95,6 +98,25 @@ message ICEPollResponse {
     bool success = 1;
     repeated ICECandidate candidates = 2;
     bool gatheringComplete = 3;
+}
+
+message ICEGatheringStatus {
+    bool complete = 1;
+}
+
+message ICERestart {
+    string reason = 1;
+    int32 attempt = 2;
+}
+
+message ICEStreamMessage {
+    string sessionId = 1;
+    string fromUser = 2;
+    oneof message {
+        ICECandidate candidate = 3;
+        ICEGatheringStatus gathering = 4;
+        ICERestart restart = 5;
+    }
 }
 
 message ICECompleteRequest {

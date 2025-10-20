@@ -1,255 +1,384 @@
 package com.saferoom.client;
 
-import org.ice4j.Transport;
-import org.ice4j.TransportAddress;
-import org.ice4j.ice.*;
-import org.ice4j.ice.harvest.*;
-
 import com.saferoom.grpc.SafeRoomProto;
 import com.saferoom.grpc.UDPHoleGrpc;
 import io.grpc.ManagedChannel;
-
-import java.beans.PropertyChangeListener;
+import io.grpc.stub.StreamObserver;
 import java.beans.PropertyChangeEvent;
-import java.util.concurrent.*;
+import java.beans.PropertyChangeListener;
+import java.util.Objects;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.ice4j.Transport;
+import org.ice4j.TransportAddress;
+import org.ice4j.ice.Agent;
+import org.ice4j.ice.CandidatePair;
+import org.ice4j.ice.CandidatePairState;
+import org.ice4j.ice.CandidateType;
+import org.ice4j.ice.Component;
+import org.ice4j.ice.IceMediaStream;
+import org.ice4j.ice.IceProcessingState;
+import org.ice4j.ice.KeepAliveStrategy;
+import org.ice4j.ice.LocalCandidate;
+import org.ice4j.ice.RemoteCandidate;
+import org.ice4j.ice.harvest.StunCandidateHarvester;
+import org.ice4j.ice.harvest.TurnCandidateHarvester;
+import org.ice4j.security.LongTermCredential;
 
+/**
+ * Controls ICE gathering and connectivity establishment for a single peer-to-peer session.
+ */
 public class ICEManager {
-    
-    private Agent iceAgent;
-    private IceMediaStream mediaStream;
-    private Component component;
-    
-    private String localUsername;
-    private String remoteUsername;
+
+    public static class TurnConfig {
+        private final String server;
+        private final int port;
+        private final String username;
+        private final String password;
+
+        public TurnConfig(String server, int port, String username, String password) {
+            this.server = Objects.requireNonNull(server, "server");
+            this.port = port;
+            this.username = Objects.requireNonNull(username, "username");
+            this.password = Objects.requireNonNull(password, "password");
+        }
+
+        public String getServer() {
+            return server;
+        }
+
+        public int getPort() {
+            return port;
+        }
+
+        public String getUsername() {
+            return username;
+        }
+
+        public String getPassword() {
+            return password;
+        }
+
+        public static TurnConfig fromEnvironment() {
+            String server = System.getenv("TURN_SERVER");
+            String portStr = System.getenv("TURN_PORT");
+            String username = System.getenv("TURN_USERNAME");
+            String password = System.getenv("TURN_PASSWORD");
+
+            if (server == null || server.isBlank() ||
+                portStr == null || portStr.isBlank() ||
+                username == null || username.isBlank() ||
+                password == null || password.isBlank()) {
+                return null;
+            }
+
+            try {
+                int port = Integer.parseInt(portStr);
+                return new TurnConfig(server, port, username, password);
+            } catch (NumberFormatException ex) {
+                System.err.println("Invalid TURN_PORT value: " + portStr);
+                return null;
+            }
+        }
+    }
+
+    private volatile Agent iceAgent;
+    private volatile IceMediaStream mediaStream;
+    private volatile Component component;
+
+    private final String localUsername;
+    private final String remoteUsername;
     private String sessionId;
-    
-    private ManagedChannel grpcChannel;
-    private UDPHoleGrpc.UDPHoleBlockingStub stub;
-    
-    private ScheduledExecutorService pollExecutor;
-    private int lastReceivedCandidateIndex = 0;
-    
-    private boolean isGatheringComplete = false;
-    private boolean isConnected = false;
-    
-    private CandidatePair selectedPair;
-    
+
+    private final ManagedChannel grpcChannel;
+    private final UDPHoleGrpc.UDPHoleBlockingStub blockingStub;
+    private final UDPHoleGrpc.UDPHoleStub asyncStub;
+
+    private final Object streamLock = new Object();
+    private StreamObserver<SafeRoomProto.ICEStreamMessage> requestObserver;
+
+    private final AtomicBoolean gatheringComplete = new AtomicBoolean(false);
+    private final AtomicBoolean remoteGatheringComplete = new AtomicBoolean(false);
+    private final AtomicBoolean connected = new AtomicBoolean(false);
+    private final AtomicBoolean connectivityStarted = new AtomicBoolean(false);
+    private final AtomicBoolean restarting = new AtomicBoolean(false);
+
+    private final AtomicInteger retryCounter = new AtomicInteger(0);
+    private static final int MAX_RETRIES = 5;
+    private static final long BASE_RETRY_DELAY_MS = 1000L;
+
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "ice-retry-scheduler");
+        t.setDaemon(true);
+        return t;
+    });
+    private final ExecutorService workerExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "ice-worker");
+        t.setDaemon(true);
+        return t;
+    });
+
+    private volatile CandidatePair selectedPair;
+    private volatile boolean closed;
+
+    private String stunServer;
+    private int stunPort;
+    private TurnConfig turnConfig;
+
     public ICEManager(String localUsername, String remoteUsername, ManagedChannel grpcChannel) {
         this.localUsername = localUsername;
         this.remoteUsername = remoteUsername;
         this.grpcChannel = grpcChannel;
-        this.stub = UDPHoleGrpc.newBlockingStub(grpcChannel);
+        this.blockingStub = UDPHoleGrpc.newBlockingStub(grpcChannel);
+        this.asyncStub = UDPHoleGrpc.newStub(grpcChannel);
     }
-    
+
     /**
-     * P2P bağlantısını başlat
-     * 1. Server'a P2P session oluşturma isteği gönder
-     * 2. ICE Agent'ı başlat
-     * 3. Candidate gathering'e başla (trickle mode)
+     * Initiates the P2P session and starts ICE gathering.
      */
-    public void initiateConnection(String stunServer, int stunPort) throws Exception {
+    public void initiateConnection(String stunServer, int stunPort, TurnConfig turnConfig) throws Exception {
         System.out.println("Initiating P2P connection to " + remoteUsername);
-        
-        // 1. Server'a P2P session oluşturma isteği
+
+        this.stunServer = stunServer;
+        this.stunPort = stunPort;
+        this.turnConfig = turnConfig;
+
         SafeRoomProto.P2PInitRequest initRequest = SafeRoomProto.P2PInitRequest.newBuilder()
             .setFromUser(localUsername)
             .setToUser(remoteUsername)
             .build();
-        
-        SafeRoomProto.P2PInitResponse initResponse = stub.initiateP2PConnection(initRequest);
-        
+
+        SafeRoomProto.P2PInitResponse initResponse = blockingStub.initiateP2PConnection(initRequest);
         if (!initResponse.getSuccess()) {
             throw new Exception("P2P init failed: " + initResponse.getMessage());
         }
-        
+
         this.sessionId = initResponse.getSessionId();
+        this.closed = false;
+        this.retryCounter.set(0);
         System.out.println("P2P session created: " + sessionId);
-        
-        // 2. ICE Agent'ı başlat
-        initializeICEAgent(stunServer, stunPort);
-        
-        // 3. Remote candidate polling başlat
-        startRemoteCandidatePolling();
+
+        openIceStream();
+        initializeICEAgent();
+        startCandidateGathering();
     }
-    
-    /**
-     * ICE Agent'ı başlat ve candidate gathering'e başla
-     */
-    private void initializeICEAgent(String stunServer, int stunPort) throws Exception {
+
+    private void openIceStream() {
+        StreamObserver<SafeRoomProto.ICEStreamMessage> responseObserver = new StreamObserver<>() {
+            @Override
+            public void onNext(SafeRoomProto.ICEStreamMessage message) {
+                if (!sessionId.equals(message.getSessionId())) {
+                    return;
+                }
+
+                if (message.hasCandidate()) {
+                    addRemoteCandidate(message.getCandidate());
+                } else if (message.hasGathering()) {
+                    if (message.getGathering().getComplete()) {
+                        remoteGatheringComplete.set(true);
+                        maybeStartConnectivityCheck();
+                    }
+                } else if (message.hasRestart()) {
+                    handleRemoteRestart(message.getRestart());
+                }
+            }
+
+            @Override
+            public void onError(Throwable t) {
+                if (closed) {
+                    return;
+                }
+                System.err.println("ICE stream error: " + t.getMessage());
+                scheduleStreamReconnect();
+            }
+
+            @Override
+            public void onCompleted() {
+                if (closed) {
+                    return;
+                }
+                System.out.println("ICE stream completed, reopening");
+                scheduleStreamReconnect();
+            }
+        };
+
+        synchronized (streamLock) {
+            if (requestObserver != null) {
+                requestObserver.onCompleted();
+            }
+            requestObserver = asyncStub.streamICE(responseObserver);
+        }
+
+        // register the stream immediately so the server can push buffered state
+        SafeRoomProto.ICEStreamMessage registerMessage = SafeRoomProto.ICEStreamMessage.newBuilder()
+            .setSessionId(sessionId)
+            .setFromUser(localUsername)
+            .setGathering(SafeRoomProto.ICEGatheringStatus.newBuilder().setComplete(false).build())
+            .build();
+        sendStreamMessage(registerMessage);
+    }
+
+    private void scheduleStreamReconnect() {
+        scheduler.schedule(() -> {
+            if (!closed) {
+                System.out.println("Re-opening ICE stream for session " + sessionId);
+                openIceStream();
+            }
+        }, 1, TimeUnit.SECONDS);
+    }
+
+    private void initializeICEAgent() throws Exception {
+        cleanupAgent();
+
         System.out.println("Initializing ICE Agent");
-        
-        // ICE Agent oluştur
-        iceAgent = new Agent();
-        
-        // STUN harvester ekle
+        Agent agent = new Agent();
+
         StunCandidateHarvester stunHarvester = new StunCandidateHarvester(
             new TransportAddress(stunServer, stunPort, Transport.UDP)
         );
-        iceAgent.addCandidateHarvester(stunHarvester);
-        
-        // Media stream oluştur
-        mediaStream = iceAgent.createMediaStream("data");
-        
-        // Component ekle
-        component = iceAgent.createComponent(
+        agent.addCandidateHarvester(stunHarvester);
+
+        if (turnConfig != null) {
+            TransportAddress turnAddress = new TransportAddress(turnConfig.getServer(), turnConfig.getPort(), Transport.UDP);
+            LongTermCredential credential = new LongTermCredential(turnConfig.getUsername(), turnConfig.getPassword());
+            TurnCandidateHarvester turnHarvester = new TurnCandidateHarvester(turnAddress, credential);
+            agent.addCandidateHarvester(turnHarvester);
+            System.out.println("TURN support enabled for " + turnConfig.getServer() + ":" + turnConfig.getPort());
+        }
+
+        mediaStream = agent.createMediaStream("data");
+        component = agent.createComponent(
             mediaStream,
-            0, // preferredPort (0 = random)
-            49152, // minPort
-            65535, // maxPort
+            0,
+            49152,
+            65535,
             KeepAliveStrategy.ALL_SUCCEEDED
         );
-        
+
         mediaStream.addPairChangeListener(new PropertyChangeListener() {
             @Override
             public void propertyChange(PropertyChangeEvent evt) {
-                if (evt.getPropertyName().equals(IceMediaStream.PROPERTY_PAIR_STATE_CHANGED)) {
-                    CandidatePair pair = (CandidatePair) evt.getNewValue();
-                    if (pair.getState() == CandidatePairState.SUCCEEDED) {
-                        System.out.println("Candidate pair succeeded: " + pair);
-                        selectedPair = pair;
-                        isConnected = true;
-                    }
+                if (!IceMediaStream.PROPERTY_PAIR_STATE_CHANGED.equals(evt.getPropertyName())) {
+                    return;
+                }
+                CandidatePair pair = (CandidatePair) evt.getNewValue();
+                if (pair != null && pair.getState() == CandidatePairState.SUCCEEDED) {
+                    selectedPair = pair;
+                    connected.set(true);
+                    System.out.println("Candidate pair succeeded: " + pair);
                 }
             }
         });
-        
+
+        iceAgent = agent;
+        gatheringComplete.set(false);
+        remoteGatheringComplete.set(false);
+        connectivityStarted.set(false);
+        connected.set(false);
+        selectedPair = null;
+
         System.out.println("ICE Agent initialized");
-        
-        // Candidate gathering başlat
-        startCandidateGathering();
     }
-    
-    /**
-     * Local candidate gathering'i başlat (Trickle mode)
-     */
+
+    private void cleanupAgent() {
+        if (iceAgent != null) {
+            try {
+                iceAgent.free();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
     private void startCandidateGathering() {
-        System.out.println("Starting candidate gathering (trickle mode)");
-        
-        // Tüm candidate'leri topla ve hemen gönder
         new Thread(() -> {
             try {
-                // Kısa bekle (harvester'ların başlaması için)
                 Thread.sleep(50);
-                
-                // Tüm local candidate'leri topla ve gönder
-                for (LocalCandidate candidate : component.getLocalCandidates()) {
-                    sendCandidateToServer(candidate);
+                if (component == null) {
+                    throw new IllegalStateException("ICE component not initialized");
                 }
-                
-                // Gathering complete işaretle
-                markGatheringComplete();
-                
+                for (LocalCandidate candidate : component.getLocalCandidates()) {
+                    sendCandidate(candidate);
+                }
+                gatheringComplete.set(true);
+                sendGatheringComplete();
+                maybeStartConnectivityCheck();
             } catch (Exception e) {
                 System.err.println("Candidate gathering error: " + e.getMessage());
-                e.printStackTrace();
             }
-        }).start();
+        }, "ice-gatherer").start();
     }
-    
-    /**
-     * Local candidate'i server'a gönder (Trickle)
-     */
-    private void sendCandidateToServer(LocalCandidate candidate) {
+
+    private void sendCandidate(LocalCandidate candidate) {
         try {
             TransportAddress addr = candidate.getTransportAddress();
-            
-            SafeRoomProto.ICECandidate.Builder candidateBuilder = SafeRoomProto.ICECandidate.newBuilder()
+            SafeRoomProto.ICECandidate.Builder builder = SafeRoomProto.ICECandidate.newBuilder()
                 .setFoundation(candidate.getFoundation())
-                .setPriority((int)candidate.getPriority())
+                .setPriority((int) candidate.getPriority())
                 .setIp(addr.getHostAddress())
                 .setPort(addr.getPort())
                 .setType(candidate.getType().toString());
-            
+
             if (candidate.getRelatedAddress() != null) {
-                candidateBuilder.setRelatedAddress(candidate.getRelatedAddress().getHostAddress());
-                candidateBuilder.setRelatedPort(candidate.getRelatedAddress().getPort());
+                builder.setRelatedAddress(candidate.getRelatedAddress().getHostAddress());
+                builder.setRelatedPort(candidate.getRelatedAddress().getPort());
             }
-            
-            SafeRoomProto.ICECandidateTrickle trickle = SafeRoomProto.ICECandidateTrickle.newBuilder()
+
+            SafeRoomProto.ICEStreamMessage message = SafeRoomProto.ICEStreamMessage.newBuilder()
                 .setSessionId(sessionId)
                 .setFromUser(localUsername)
-                .setCandidate(candidateBuilder.build())
+                .setCandidate(builder.build())
                 .build();
-            
-            SafeRoomProto.Status response = stub.sendICECandidate(trickle);
-            
-            System.out.println("Sent candidate: " + addr + " (" + candidate.getType() + ") - " + response.getMessage());
-            
+
+            sendStreamMessage(message);
+            System.out.println("Sent candidate: " + addr + " (" + candidate.getType() + ")");
         } catch (Exception e) {
             System.err.println("Error sending candidate: " + e.getMessage());
         }
     }
-    
-    /**
-     * Gathering tamamlandı sinyalini gönder
-     */
-    private void markGatheringComplete() {
-        try {
-            SafeRoomProto.ICECompleteRequest request = SafeRoomProto.ICECompleteRequest.newBuilder()
-                .setSessionId(sessionId)
-                .setUsername(localUsername)
-                .build();
-            
-            stub.iCEGatheringComplete(request);
-            isGatheringComplete = true;
-            
-            System.out.println("ICE gathering complete signal sent");
-            
-        } catch (Exception e) {
-            System.err.println("Error marking gathering complete: " + e.getMessage());
+
+    private void sendGatheringComplete() {
+        SafeRoomProto.ICEStreamMessage message = SafeRoomProto.ICEStreamMessage.newBuilder()
+            .setSessionId(sessionId)
+            .setFromUser(localUsername)
+            .setGathering(SafeRoomProto.ICEGatheringStatus.newBuilder().setComplete(true).build())
+            .build();
+        sendStreamMessage(message);
+        System.out.println("ICE gathering complete signal sent");
+    }
+
+    private void sendStreamMessage(SafeRoomProto.ICEStreamMessage message) {
+        StreamObserver<SafeRoomProto.ICEStreamMessage> observer;
+        synchronized (streamLock) {
+            observer = requestObserver;
+        }
+        if (observer == null) {
+            System.err.println("ICE stream observer not ready; dropping message");
+            return;
+        }
+        synchronized (observer) {
+            try {
+                observer.onNext(message);
+            } catch (RuntimeException e) {
+                System.err.println("Failed to push ICE message: " + e.getMessage());
+            }
         }
     }
-    
-    /**
-     * Remote candidate polling başlat
-     */
-    private void startRemoteCandidatePolling() {
-        pollExecutor = Executors.newSingleThreadScheduledExecutor();
-        
-        pollExecutor.scheduleAtFixedRate(() -> {
-            try {
-                SafeRoomProto.ICEPollRequest pollRequest = SafeRoomProto.ICEPollRequest.newBuilder()
-                    .setSessionId(sessionId)
-                    .setUsername(localUsername)
-                    .setLastCandidateIndex(lastReceivedCandidateIndex)
-                    .build();
-                
-                SafeRoomProto.ICEPollResponse pollResponse = stub.pollICECandidates(pollRequest);
-                
-                if (pollResponse.getCandidatesCount() > 0) {
-                    System.out.println("Received " + pollResponse.getCandidatesCount() + " remote candidates");
-                    
-                    for (SafeRoomProto.ICECandidate protoCandidate : pollResponse.getCandidatesList()) {
-                        addRemoteCandidate(protoCandidate);
-                        lastReceivedCandidateIndex++;
-                    }
-                }
-                
-                // Karşı taraf gathering'i tamamladıysa ve bizim de tamamladıysak
-                if (pollResponse.getGatheringComplete() && isGatheringComplete && !isConnected) {
-                    startConnectivityCheck();
-                    pollExecutor.shutdown();
-                }
-                
-            } catch (Exception e) {
-                System.err.println("Polling error: " + e.getMessage());
-            }
-        }, 500, 500, TimeUnit.MILLISECONDS);
-    }
-    
-    /**
-     * Remote candidate ekle
-     */
+
     private void addRemoteCandidate(SafeRoomProto.ICECandidate protoCandidate) {
+        if (component == null) {
+            return;
+        }
         try {
             TransportAddress addr = new TransportAddress(
                 protoCandidate.getIp(),
                 protoCandidate.getPort(),
                 Transport.UDP
             );
-            
             CandidateType type = CandidateType.parse(protoCandidate.getType());
-            
             RemoteCandidate remoteCandidate = new RemoteCandidate(
                 addr,
                 component,
@@ -258,88 +387,145 @@ public class ICEManager {
                 protoCandidate.getPriority(),
                 null
             );
-            
             component.addRemoteCandidate(remoteCandidate);
-            
             System.out.println("Added remote candidate: " + addr + " (" + type + ")");
-            
         } catch (Exception e) {
             System.err.println("Error adding remote candidate: " + e.getMessage());
         }
     }
-    
-    /**
-     * ICE connectivity check başlat
-     */
-    private void startConnectivityCheck() {
+
+    private void maybeStartConnectivityCheck() {
+        if (gatheringComplete.get() && remoteGatheringComplete.get() && !connected.get()) {
+            if (connectivityStarted.compareAndSet(false, true)) {
+                startConnectivityCheckAsync();
+            }
+        }
+    }
+
+    private void startConnectivityCheckAsync() {
+        workerExecutor.submit(() -> {
+            if (!runConnectivityCheck()) {
+                handleConnectionFailure("Connectivity check failed");
+            }
+        });
+    }
+
+    private boolean runConnectivityCheck() {
         try {
-            System.out.println("Starting ICE connectivity checks");
-            
+            if (iceAgent == null) {
+                throw new IllegalStateException("ICE agent not initialised");
+            }
             iceAgent.startConnectivityEstablishment();
-            
-            // Wait for connection (max 30 seconds)
+
             long startTime = System.currentTimeMillis();
-            while (!isConnected && (System.currentTimeMillis() - startTime) < 30000) {
+            while (!connected.get() && !closed &&
+                   (System.currentTimeMillis() - startTime) < 30000) {
                 if (iceAgent.getState() == IceProcessingState.FAILED) {
-                    throw new Exception("ICE connectivity check failed");
+                    return false;
                 }
                 Thread.sleep(100);
             }
-            
-            if (isConnected) {
+            if (connected.get()) {
                 System.out.println("P2P connection established!");
-                System.out.println("Selected pair:");
-                System.out.println("  Local:  " + selectedPair.getLocalCandidate().getTransportAddress());
-                System.out.println("  Remote: " + selectedPair.getRemoteCandidate().getTransportAddress());
-            } else {
-                throw new Exception("Connection timeout");
+                if (selectedPair != null) {
+                    System.out.println("  Local:  " + selectedPair.getLocalCandidate().getTransportAddress());
+                    System.out.println("  Remote: " + selectedPair.getRemoteCandidate().getTransportAddress());
+                }
+                return true;
             }
-            
+            return false;
         } catch (Exception e) {
             System.err.println("Connectivity check error: " + e.getMessage());
-            e.printStackTrace();
+            return false;
         }
     }
-    
+
+    private void handleConnectionFailure(String reason) {
+        if (closed) {
+            return;
+        }
+        int attempt = retryCounter.incrementAndGet();
+        if (attempt > MAX_RETRIES) {
+            System.err.println("Maximum ICE retries reached for session " + sessionId);
+            return;
+        }
+        long delay = (long) Math.pow(2, attempt - 1) * BASE_RETRY_DELAY_MS;
+        System.out.println("Scheduling ICE restart (attempt " + attempt + ") in " + delay + " ms: " + reason);
+        scheduler.schedule(() -> restartIce(reason, true, attempt), delay, TimeUnit.MILLISECONDS);
+    }
+
+    private void restartIce(String reason, boolean notifyServer, int attempt) {
+        if (closed || !restarting.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            System.out.println("Restarting ICE for session " + sessionId + ": " + reason);
+            initializeICEAgent();
+            if (notifyServer) {
+                SafeRoomProto.ICERestart restart = SafeRoomProto.ICERestart.newBuilder()
+                    .setReason(reason)
+                    .setAttempt(attempt)
+                    .build();
+                SafeRoomProto.ICEStreamMessage message = SafeRoomProto.ICEStreamMessage.newBuilder()
+                    .setSessionId(sessionId)
+                    .setFromUser(localUsername)
+                    .setRestart(restart)
+                    .build();
+                sendStreamMessage(message);
+            }
+            startCandidateGathering();
+        } catch (Exception e) {
+            System.err.println("ICE restart failed: " + e.getMessage());
+            handleConnectionFailure("Restart error: " + e.getMessage());
+        } finally {
+            restarting.set(false);
+        }
+    }
+
+    private void handleRemoteRestart(SafeRoomProto.ICERestart restart) {
+        System.out.println("Remote requested ICE restart: " + restart.getReason() +
+            " (attempt " + restart.getAttempt() + ")");
+        retryCounter.set(0);
+        scheduler.execute(() -> restartIce("Remote requested restart", false, restart.getAttempt()));
+    }
+
     /**
-     * P2P bağlantısını kapat
+     * Releases all resources associated with the ICE manager.
      */
     public void close() {
-        try {
-            if (pollExecutor != null && !pollExecutor.isShutdown()) {
-                pollExecutor.shutdown();
-            }
-            
-            if (sessionId != null) {
+        closed = true;
+        if (sessionId != null && !sessionId.isEmpty()) {
+            try {
                 SafeRoomProto.P2PTerminateRequest request = SafeRoomProto.P2PTerminateRequest.newBuilder()
                     .setSessionId(sessionId)
                     .setUsername(localUsername)
                     .build();
-                
-                stub.terminateP2PSession(request);
+                blockingStub.terminateP2PSession(request);
+            } catch (Exception e) {
+                System.err.println("Error terminating P2P session: " + e.getMessage());
             }
-            
-            if (iceAgent != null) {
-                iceAgent.free();
-            }
-            
-            System.out.println("ICE Manager closed");
-            
-        } catch (Exception e) {
-            System.err.println("Error closing ICE Manager: " + e.getMessage());
         }
+
+        synchronized (streamLock) {
+            if (requestObserver != null) {
+                try {
+                    requestObserver.onCompleted();
+                } catch (Exception ignored) {
+                }
+                requestObserver = null;
+            }
+        }
+
+        cleanupAgent();
+        scheduler.shutdownNow();
+        workerExecutor.shutdownNow();
+        System.out.println("ICE Manager closed");
     }
-    
-    /**
-     * Bağlantı durumunu kontrol et
-     */
+
     public boolean isConnected() {
-        return isConnected;
+        return connected.get();
     }
-    
-    /**
-     * Selected candidate pair'i al
-     */
+
     public CandidatePair getSelectedPair() {
         return selectedPair;
     }
