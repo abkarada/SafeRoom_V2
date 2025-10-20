@@ -16,8 +16,8 @@ import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.Enumeration;
 import java.util.Map;
-import java.util.HashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentHashMap;
 import com.saferoom.client.ICEManager.TurnConfig;
 
 public class ClientMenu{
@@ -35,7 +35,7 @@ public class ClientMenu{
         };
 
         // P2P bağlantı yönetimi
-        private static Map<String, ICEManager> activeP2PConnections = new HashMap<>();
+        private static Map<String, ICEManager> activeP2PConnections = new ConcurrentHashMap<>();
 
 	static{
 		try{
@@ -606,23 +606,46 @@ public class ClientMenu{
         int stunPort = Integer.parseInt(stunSelection[1]);
         System.out.println("Using STUN server: " + stunHost + ":" + stunPort);
 
-        iceManager.initiateConnection(stunHost, stunPort, turnConfig);
-        
-        // Bağlantı başarılı olana kadar bekle (max 30 saniye)
-        long startTime = System.currentTimeMillis();
-        while (!iceManager.isConnected() && (System.currentTimeMillis() - startTime) < 30000) {
-            Thread.sleep(100);
-        }
-        
-        if (iceManager.isConnected()) {
-            // Başarılı, aktif bağlantılara ekle
-            activeP2PConnections.put(targetUser, iceManager);
-            System.out.println("P2P connection established with " + targetUser);
+        iceManager.setListener(new ICEEventListener() {
+            @Override
+            public void onLocalCandidateDiscovered(org.ice4j.ice.LocalCandidate candidate) {
+                // no-op
+            }
+
+            @Override
+            public void onRemoteCandidateAdded(org.ice4j.ice.RemoteCandidate candidate) {
+                // no-op
+            }
+
+            @Override
+            public void onGatheringComplete() {
+                System.out.println("Local ICE gathering complete for " + targetUser);
+            }
+
+            @Override
+            public void onIceStateChanged(org.ice4j.ice.IceProcessingState state) {
+                System.out.println("ICE state for " + targetUser + ": " + state);
+            }
+
+            @Override
+            public void onConnected(org.ice4j.ice.CandidatePair pair) {
+                activeP2PConnections.put(targetUser, iceManager);
+                System.out.println("P2P connection established with " + targetUser);
+            }
+
+            @Override
+            public void onFailure(String reason) {
+                System.err.println("P2P connection failed for " + targetUser + ": " + reason);
+                activeP2PConnections.remove(targetUser);
+            }
+        });
+
+        try {
+            iceManager.initiateConnection(stunHost, stunPort, turnConfig);
             return iceManager;
-        } else {
-            // Başarısız, temizle
+        } catch (Exception e) {
             iceManager.close();
-            throw new Exception("P2P connection timeout");
+            throw e;
         }
     }
     
