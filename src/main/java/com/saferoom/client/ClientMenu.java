@@ -11,6 +11,10 @@ import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import io.grpc.netty.shaded.io.netty.handler.ssl.SslContext;
 import java.io.File;
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.util.Enumeration;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.concurrent.TimeUnit;
@@ -23,8 +27,15 @@ public class ClientMenu{
 	private static String CERT_PATH = "certs/server.crt";
 	public static ManagedChannel STUB_CHANNEL;
 	
-	// P2P bağlantı yönetimi
-	private static Map<String, ICEManager> activeP2PConnections = new HashMap<>();
+        private static final String[][] STUN_SERVERS = {
+                {"stun.l.google.com", "19302"},
+                {"stun1.l.google.com", "19302"},
+                {"stun.ipv6.google.com", "19305"},
+                {"stun.nextcloud.com", "3478"}
+        };
+
+        // P2P bağlantı yönetimi
+        private static Map<String, ICEManager> activeP2PConnections = new HashMap<>();
 
 	static{
 		try{
@@ -34,11 +45,11 @@ public class ClientMenu{
 		}
 	}
 	
-	private static ManagedChannel createChannel() {
-		try {
-			SslContext sslContext = GrpcSslContexts.forClient()
-				.trustManager(new File(CERT_PATH))
-				.build();
+        private static ManagedChannel createChannel() {
+                try {
+                        SslContext sslContext = GrpcSslContexts.forClient()
+                                .trustManager(new File(CERT_PATH))
+                                .build();
 
 			return NettyChannelBuilder.forAddress(Server, Port)
 				.sslContext(sslContext)
@@ -52,8 +63,42 @@ public class ClientMenu{
 			System.err.println("Channel oluşturulurken hata: " + e.getMessage());
 			e.printStackTrace();
 			throw new RuntimeException("gRPC channel başlatılamadı", e);
-		}
-	}
+                }
+        }
+
+        private static String[] selectStunServer() {
+                boolean hasIpv6 = hasLocalIpv6Interface();
+                if (hasIpv6) {
+                        for (String[] server : STUN_SERVERS) {
+                                if (server[0].contains("ipv6")) {
+                                        return server;
+                                }
+                        }
+                }
+                return STUN_SERVERS[0];
+        }
+
+        private static boolean hasLocalIpv6Interface() {
+                try {
+                        Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+                        while (interfaces != null && interfaces.hasMoreElements()) {
+                                NetworkInterface networkInterface = interfaces.nextElement();
+                                if (!networkInterface.isUp() || networkInterface.isLoopback() || networkInterface.isVirtual()) {
+                                        continue;
+                                }
+                                Enumeration<InetAddress> addresses = networkInterface.getInetAddresses();
+                                while (addresses.hasMoreElements()) {
+                                        InetAddress address = addresses.nextElement();
+                                        if (address instanceof Inet6Address && !address.isLinkLocalAddress()) {
+                                                return true;
+                                        }
+                                }
+                        }
+                } catch (Exception e) {
+                        System.err.println("Failed to inspect local interfaces for IPv6: " + e.getMessage());
+                }
+                return false;
+        }
 
 	public static String Login(String username, String Password) {
 		try {
@@ -556,8 +601,12 @@ public class ClientMenu{
         // Opsiyonel TURN desteğini çevre değişkenlerinden yükle
         TurnConfig turnConfig = TurnConfig.fromEnvironment();
 
-        // P2P bağlantısını başlat (STUN sunucusu olarak Google'ı varsayılan kullan)
-        iceManager.initiateConnection("stun.l.google.com", 19302, turnConfig);
+        String[] stunSelection = selectStunServer();
+        String stunHost = stunSelection[0];
+        int stunPort = Integer.parseInt(stunSelection[1]);
+        System.out.println("Using STUN server: " + stunHost + ":" + stunPort);
+
+        iceManager.initiateConnection(stunHost, stunPort, turnConfig);
         
         // Bağlantı başarılı olana kadar bekle (max 30 saniye)
         long startTime = System.currentTimeMillis();

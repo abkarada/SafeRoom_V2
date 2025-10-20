@@ -4,9 +4,13 @@ import com.saferoom.grpc.SafeRoomProto;
 import io.grpc.stub.StreamObserver;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public class P2PSessionManager {
-    
+
+    private static final Logger LOGGER = Logger.getLogger(P2PSessionManager.class.getName());
+
     private static final ConcurrentHashMap<String, P2PSession> sessions = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, Map<String, StreamObserver<SafeRoomProto.ICEStreamMessage>>> streamObservers =
         new ConcurrentHashMap<>();
@@ -48,7 +52,10 @@ public class P2PSessionManager {
         
         public void addCandidate(SafeRoomProto.ICECandidate candidate) {
             candidates.add(candidate);
-            System.out.println("Candidate added for " + username + " (total: " + candidates.size() + ")");
+            String ip = candidate.getIp();
+            String ipVersion = (ip != null && ip.contains(":")) ? "IPv6" : "IPv4";
+            LOGGER.log(Level.INFO, () -> String.format("Candidate added for %s (%s, total: %d)",
+                username, ipVersion, candidates.size()));
             pendingRestart = null;
         }
 
@@ -248,6 +255,8 @@ public class P2PSessionManager {
             .setFromUser(fromUser)
             .setCandidate(candidate)
             .build();
+        String ipVersion = (candidate.getIp() != null && candidate.getIp().contains(":")) ? "IPv6" : "IPv4";
+        LOGGER.log(Level.INFO, () -> String.format("Forwarding %s candidate from %s to %s", ipVersion, fromUser, toUser));
         safeOnNext(observer, message);
     }
 

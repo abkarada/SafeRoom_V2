@@ -6,13 +6,17 @@ import io.grpc.ManagedChannel;
 import io.grpc.stub.StreamObserver;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
+import java.net.Inet6Address;
+import java.net.InetAddress;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.ConcurrentHashMap;
 import org.ice4j.Transport;
 import org.ice4j.TransportAddress;
 import org.ice4j.ice.Agent;
@@ -123,6 +127,7 @@ public class ICEManager {
     });
 
     private volatile CandidatePair selectedPair;
+    private final Set<String> sentCandidateKeys = ConcurrentHashMap.newKeySet();
     private volatile boolean closed;
 
     private String stunServer;
@@ -242,6 +247,13 @@ public class ICEManager {
         );
         agent.addCandidateHarvester(stunHarvester);
 
+        addIpv6Harvesters(agent);
+
+        StunCandidateHarvester tcpHarvester = new StunCandidateHarvester(
+            new TransportAddress(stunServer, stunPort, Transport.TCP)
+        );
+        agent.addCandidateHarvester(tcpHarvester);
+
         if (turnConfig != null) {
             TransportAddress turnAddress = new TransportAddress(turnConfig.getServer(), turnConfig.getPort(), Transport.UDP);
             LongTermCredential credential = new LongTermCredential(turnConfig.getUsername(), turnConfig.getPassword());
@@ -275,6 +287,7 @@ public class ICEManager {
         });
 
         iceAgent = agent;
+        sentCandidateKeys.clear();
         gatheringComplete.set(false);
         remoteGatheringComplete.set(false);
         connectivityStarted.set(false);
@@ -294,38 +307,74 @@ public class ICEManager {
     }
 
     private void startCandidateGathering() {
-        new Thread(() -> {
+        workerExecutor.submit(() -> {
             try {
-                Thread.sleep(50);
                 if (component == null) {
                     throw new IllegalStateException("ICE component not initialized");
                 }
-                for (LocalCandidate candidate : component.getLocalCandidates()) {
-                    sendCandidate(candidate);
+
+                long lastNewCandidateTime = System.currentTimeMillis();
+                while (!closed) {
+                    boolean newCandidateDispatched = false;
+                    for (LocalCandidate candidate : component.getLocalCandidates()) {
+                        if (sendCandidate(candidate)) {
+                            newCandidateDispatched = true;
+                            lastNewCandidateTime = System.currentTimeMillis();
+                        }
+                    }
+
+                    if (newCandidateDispatched) {
+                        continue;
+                    }
+
+                    long silence = System.currentTimeMillis() - lastNewCandidateTime;
+                    if (silence > 3000) {
+                        break;
+                    }
+                    Thread.sleep(100);
                 }
+
                 gatheringComplete.set(true);
                 sendGatheringComplete();
                 maybeStartConnectivityCheck();
             } catch (Exception e) {
                 System.err.println("Candidate gathering error: " + e.getMessage());
             }
-        }, "ice-gatherer").start();
+        });
     }
 
-    private void sendCandidate(LocalCandidate candidate) {
+    private boolean sendCandidate(LocalCandidate candidate) {
         try {
             TransportAddress addr = candidate.getTransportAddress();
+            if (addr == null) {
+                return false;
+            }
+
+            String candidateKey = candidate.getFoundation() + "|" + addr.getHostAddress() + "|" + addr.getPort()
+                + "|" + candidate.getTransport();
+            if (!sentCandidateKeys.add(candidateKey)) {
+                return false;
+            }
+
+            long priority = candidate.getPriority();
+            if (addr.isIPv6()) {
+                priority += 20;
+            }
+
+            String mediaType = candidate.getParentComponent() != null &&
+                candidate.getParentComponent().getParentStream() != null
+                ? candidate.getParentComponent().getParentStream().getName()
+                : "data";
+
             SafeRoomProto.ICECandidate.Builder builder = SafeRoomProto.ICECandidate.newBuilder()
                 .setFoundation(candidate.getFoundation())
-                .setPriority((int) candidate.getPriority())
+                .setComponent(String.valueOf(candidate.getParentComponent().getComponentID()))
+                .setProtocol(candidate.getTransport().toString())
                 .setIp(addr.getHostAddress())
                 .setPort(addr.getPort())
-                .setType(candidate.getType().toString());
-
-            if (candidate.getRelatedAddress() != null) {
-                builder.setRelatedAddress(candidate.getRelatedAddress().getHostAddress());
-                builder.setRelatedPort(candidate.getRelatedAddress().getPort());
-            }
+                .setPriority(priority)
+                .setType(candidate.getType().toString())
+                .setMediaType(mediaType);
 
             SafeRoomProto.ICEStreamMessage message = SafeRoomProto.ICEStreamMessage.newBuilder()
                 .setSessionId(sessionId)
@@ -334,9 +383,12 @@ public class ICEManager {
                 .build();
 
             sendStreamMessage(message);
-            System.out.println("Sent candidate: " + addr + " (" + candidate.getType() + ")");
+            String ipVersion = addr.isIPv6() ? "IPv6" : "IPv4";
+            System.out.println("Sent candidate: " + addr + " (" + candidate.getType() + ", " + ipVersion + ")");
+            return true;
         } catch (Exception e) {
             System.err.println("Error sending candidate: " + e.getMessage());
+            return false;
         }
     }
 
@@ -373,11 +425,8 @@ public class ICEManager {
             return;
         }
         try {
-            TransportAddress addr = new TransportAddress(
-                protoCandidate.getIp(),
-                protoCandidate.getPort(),
-                Transport.UDP
-            );
+            Transport transport = parseTransport(protoCandidate.getProtocol());
+            TransportAddress addr = buildTransportAddress(protoCandidate.getIp(), protoCandidate.getPort(), transport);
             CandidateType type = CandidateType.parse(protoCandidate.getType());
             RemoteCandidate remoteCandidate = new RemoteCandidate(
                 addr,
@@ -388,9 +437,48 @@ public class ICEManager {
                 null
             );
             component.addRemoteCandidate(remoteCandidate);
-            System.out.println("Added remote candidate: " + addr + " (" + type + ")");
+            String ipVersion = addr.isIPv6() ? "IPv6" : "IPv4";
+            System.out.println("Added remote candidate: " + addr + " (" + type + ", " + ipVersion + ")");
         } catch (Exception e) {
             System.err.println("Error adding remote candidate: " + e.getMessage());
+        }
+    }
+
+    private Transport parseTransport(String protocol) {
+        if (protocol == null || protocol.isBlank()) {
+            return Transport.UDP;
+        }
+        try {
+            return Transport.parse(protocol.toUpperCase());
+        } catch (IllegalArgumentException ex) {
+            return Transport.UDP;
+        }
+    }
+
+    private TransportAddress buildTransportAddress(String host, int port, Transport transport) throws Exception {
+        if (host == null || host.isBlank()) {
+            throw new IllegalArgumentException("Candidate host is empty");
+        }
+        if (host.contains(":")) {
+            InetAddress address = InetAddress.getByName(host);
+            return new TransportAddress(address, port, transport);
+        }
+        return new TransportAddress(host, port, transport);
+    }
+
+    private void addIpv6Harvesters(Agent agent) {
+        try {
+            InetAddress[] resolvedAddresses = InetAddress.getAllByName(stunServer);
+            for (InetAddress resolved : resolvedAddresses) {
+                if (resolved instanceof Inet6Address) {
+                    TransportAddress ipv6Address = new TransportAddress(resolved, stunPort, Transport.UDP);
+                    agent.addCandidateHarvester(new StunCandidateHarvester(ipv6Address));
+                    System.out.println("IPv6 STUN harvester added: " + ipv6Address.getHostAddress());
+                    return;
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Unable to resolve IPv6 STUN address for " + stunServer + ": " + e.getMessage());
         }
     }
 
