@@ -4,14 +4,12 @@ import com.saferoom.grpc.SafeRoomProto;
 import com.saferoom.grpc.UDPHoleGrpc;
 import io.grpc.ManagedChannel;
 import io.grpc.stub.StreamObserver;
-import java.beans.PropertyChangeEvent;
-import java.beans.PropertyChangeListener;
 import java.net.Inet6Address;
 import java.net.InetAddress;
+import java.net.NetworkInterface;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.Enumeration;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -21,7 +19,6 @@ import org.ice4j.Transport;
 import org.ice4j.TransportAddress;
 import org.ice4j.ice.Agent;
 import org.ice4j.ice.CandidatePair;
-import org.ice4j.ice.CandidatePairState;
 import org.ice4j.ice.CandidateType;
 import org.ice4j.ice.Component;
 import org.ice4j.ice.IceMediaStream;
@@ -29,6 +26,7 @@ import org.ice4j.ice.IceProcessingState;
 import org.ice4j.ice.KeepAliveStrategy;
 import org.ice4j.ice.LocalCandidate;
 import org.ice4j.ice.RemoteCandidate;
+import org.ice4j.ice.harvest.TrickleCallback;
 import org.ice4j.ice.harvest.StunCandidateHarvester;
 import org.ice4j.ice.harvest.TurnCandidateHarvester;
 import org.ice4j.security.LongTermCredential;
@@ -99,7 +97,6 @@ public class ICEManager {
     private String sessionId;
 
     private final ManagedChannel grpcChannel;
-    private final UDPHoleGrpc.UDPHoleBlockingStub blockingStub;
     private final UDPHoleGrpc.UDPHoleStub asyncStub;
 
     private final Object streamLock = new Object();
@@ -110,36 +107,36 @@ public class ICEManager {
     private final AtomicBoolean connected = new AtomicBoolean(false);
     private final AtomicBoolean connectivityStarted = new AtomicBoolean(false);
     private final AtomicBoolean restarting = new AtomicBoolean(false);
+    private final AtomicBoolean closed = new AtomicBoolean(false);
 
     private final AtomicInteger retryCounter = new AtomicInteger(0);
     private static final int MAX_RETRIES = 5;
     private static final long BASE_RETRY_DELAY_MS = 1000L;
 
-    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+    private final ScheduledExecutorService scheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "ice-retry-scheduler");
-        t.setDaemon(true);
-        return t;
-    });
-    private final ExecutorService workerExecutor = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "ice-worker");
         t.setDaemon(true);
         return t;
     });
 
     private volatile CandidatePair selectedPair;
     private final Set<String> sentCandidateKeys = ConcurrentHashMap.newKeySet();
-    private volatile boolean closed;
 
     private String stunServer;
     private int stunPort;
     private TurnConfig turnConfig;
 
+    private volatile ICEEventListener eventListener;
+
     public ICEManager(String localUsername, String remoteUsername, ManagedChannel grpcChannel) {
         this.localUsername = localUsername;
         this.remoteUsername = remoteUsername;
         this.grpcChannel = grpcChannel;
-        this.blockingStub = UDPHoleGrpc.newBlockingStub(grpcChannel);
         this.asyncStub = UDPHoleGrpc.newStub(grpcChannel);
+    }
+
+    public void setListener(ICEEventListener listener) {
+        this.eventListener = listener;
     }
 
     /**
@@ -157,19 +154,19 @@ public class ICEManager {
             .setToUser(remoteUsername)
             .build();
 
-        SafeRoomProto.P2PInitResponse initResponse = blockingStub.initiateP2PConnection(initRequest);
+        SafeRoomProto.P2PInitResponse initResponse = UDPHoleGrpc.newBlockingStub(grpcChannel)
+            .initiateP2PConnection(initRequest);
         if (!initResponse.getSuccess()) {
             throw new Exception("P2P init failed: " + initResponse.getMessage());
         }
 
         this.sessionId = initResponse.getSessionId();
-        this.closed = false;
+        this.closed.set(false);
         this.retryCounter.set(0);
         System.out.println("P2P session created: " + sessionId);
 
         openIceStream();
         initializeICEAgent();
-        startCandidateGathering();
     }
 
     private void openIceStream() {
@@ -194,20 +191,30 @@ public class ICEManager {
 
             @Override
             public void onError(Throwable t) {
-                if (closed) {
+                if (closed.get()) {
                     return;
                 }
                 System.err.println("ICE stream error: " + t.getMessage());
+                ICEEventListener listener = eventListener;
+                if (listener != null) {
+                    listener.onFailure("ICE stream error: " + t.getMessage());
+                }
                 scheduleStreamReconnect();
+                scheduleIceRestart("Stream error: " + t.getMessage());
             }
 
             @Override
             public void onCompleted() {
-                if (closed) {
+                if (closed.get()) {
                     return;
                 }
                 System.out.println("ICE stream completed, reopening");
+                ICEEventListener listener = eventListener;
+                if (listener != null) {
+                    listener.onFailure("ICE stream completed unexpectedly");
+                }
                 scheduleStreamReconnect();
+                scheduleIceRestart("Stream completed");
             }
         };
 
@@ -229,7 +236,7 @@ public class ICEManager {
 
     private void scheduleStreamReconnect() {
         scheduler.schedule(() -> {
-            if (!closed) {
+            if (!closed.get()) {
                 System.out.println("Re-opening ICE stream for session " + sessionId);
                 openIceStream();
             }
@@ -242,23 +249,68 @@ public class ICEManager {
         System.out.println("Initializing ICE Agent");
         Agent agent = new Agent();
 
-        StunCandidateHarvester stunHarvester = new StunCandidateHarvester(
+        agent.addStateChangeListener(evt -> {
+            if (!Agent.PROPERTY_ICE_PROCESSING_STATE.equals(evt.getPropertyName())) {
+                return;
+            }
+            IceProcessingState state = (IceProcessingState) evt.getNewValue();
+            ICEEventListener listener = eventListener;
+            if (listener != null) {
+                listener.onIceStateChanged(state);
+            }
+            if (state == IceProcessingState.COMPLETED) {
+                connected.set(true);
+                retryCounter.set(0);
+                CandidatePair pair = extractSelectedPair();
+                selectedPair = pair;
+                if (pair != null) {
+                    System.out.println("Candidate pair succeeded: " + pair);
+                }
+                if (listener != null) {
+                    listener.onConnected(pair);
+                }
+            } else if (state == IceProcessingState.FAILED) {
+                connected.set(false);
+                if (listener != null) {
+                    listener.onFailure("Connectivity failed");
+                }
+                handleConnectionFailure("ICE state failed");
+            }
+        });
+
+        agent.addCandidateHarvester(new StunCandidateHarvester(
             new TransportAddress(stunServer, stunPort, Transport.UDP)
-        );
-        agent.addCandidateHarvester(stunHarvester);
+        ));
 
         addIpv6Harvesters(agent);
 
-        StunCandidateHarvester tcpHarvester = new StunCandidateHarvester(
+        agent.addCandidateHarvester(new StunCandidateHarvester(
             new TransportAddress(stunServer, stunPort, Transport.TCP)
-        );
-        agent.addCandidateHarvester(tcpHarvester);
+        ));
 
         if (turnConfig != null) {
-            TransportAddress turnAddress = new TransportAddress(turnConfig.getServer(), turnConfig.getPort(), Transport.UDP);
             LongTermCredential credential = new LongTermCredential(turnConfig.getUsername(), turnConfig.getPassword());
-            TurnCandidateHarvester turnHarvester = new TurnCandidateHarvester(turnAddress, credential);
-            agent.addCandidateHarvester(turnHarvester);
+            TransportAddress udpAddress = new TransportAddress(turnConfig.getServer(), turnConfig.getPort(), Transport.UDP);
+            agent.addCandidateHarvester(new TurnCandidateHarvester(udpAddress, credential));
+
+            TransportAddress tcpAddress = new TransportAddress(turnConfig.getServer(), turnConfig.getPort(), Transport.TCP);
+            agent.addCandidateHarvester(new TurnCandidateHarvester(tcpAddress, credential));
+
+            try {
+                InetAddress[] turnAddresses = InetAddress.getAllByName(turnConfig.getServer());
+                for (InetAddress resolved : turnAddresses) {
+                    if (resolved instanceof Inet6Address) {
+                        TransportAddress ipv6Udp = new TransportAddress(resolved, turnConfig.getPort(), Transport.UDP);
+                        agent.addCandidateHarvester(new TurnCandidateHarvester(ipv6Udp, credential));
+                        TransportAddress ipv6Tcp = new TransportAddress(resolved, turnConfig.getPort(), Transport.TCP);
+                        agent.addCandidateHarvester(new TurnCandidateHarvester(ipv6Tcp, credential));
+                        System.out.println("TURN IPv6 support enabled for " + resolved.getHostAddress());
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("Failed to configure IPv6 TURN harvester: " + e.getMessage());
+            }
+
             System.out.println("TURN support enabled for " + turnConfig.getServer() + ":" + turnConfig.getPort());
         }
 
@@ -271,21 +323,6 @@ public class ICEManager {
             KeepAliveStrategy.ALL_SUCCEEDED
         );
 
-        mediaStream.addPairChangeListener(new PropertyChangeListener() {
-            @Override
-            public void propertyChange(PropertyChangeEvent evt) {
-                if (!IceMediaStream.PROPERTY_PAIR_STATE_CHANGED.equals(evt.getPropertyName())) {
-                    return;
-                }
-                CandidatePair pair = (CandidatePair) evt.getNewValue();
-                if (pair != null && pair.getState() == CandidatePairState.SUCCEEDED) {
-                    selectedPair = pair;
-                    connected.set(true);
-                    System.out.println("Candidate pair succeeded: " + pair);
-                }
-            }
-        });
-
         iceAgent = agent;
         sentCandidateKeys.clear();
         gatheringComplete.set(false);
@@ -293,6 +330,8 @@ public class ICEManager {
         connectivityStarted.set(false);
         connected.set(false);
         selectedPair = null;
+
+        startCandidateTrickle(agent);
 
         System.out.println("ICE Agent initialized");
     }
@@ -306,39 +345,35 @@ public class ICEManager {
         }
     }
 
-    private void startCandidateGathering() {
-        workerExecutor.submit(() -> {
-            try {
-                if (component == null) {
-                    throw new IllegalStateException("ICE component not initialized");
+    private void startCandidateTrickle(Agent agent) {
+        agent.startCandidateTrickle(new TrickleCallback() {
+            @Override
+            public void onIceCandidates(java.util.Collection<LocalCandidate> candidates) {
+                if (closed.get()) {
+                    return;
                 }
 
-                long lastNewCandidateTime = System.currentTimeMillis();
-                while (!closed) {
-                    boolean newCandidateDispatched = false;
-                    for (LocalCandidate candidate : component.getLocalCandidates()) {
-                        if (sendCandidate(candidate)) {
-                            newCandidateDispatched = true;
-                            lastNewCandidateTime = System.currentTimeMillis();
+                if (candidates == null || candidates.isEmpty()) {
+                    if (gatheringComplete.compareAndSet(false, true)) {
+                        sendGatheringComplete();
+                        ICEEventListener listener = eventListener;
+                        if (listener != null) {
+                            listener.onGatheringComplete();
+                        }
+                        maybeStartConnectivityCheck();
+                    }
+                    return;
+                }
+
+                for (LocalCandidate candidate : candidates) {
+                    if (sendCandidate(candidate)) {
+                        ICEEventListener listener = eventListener;
+                        if (listener != null) {
+                            listener.onLocalCandidateDiscovered(candidate);
                         }
                     }
-
-                    if (newCandidateDispatched) {
-                        continue;
-                    }
-
-                    long silence = System.currentTimeMillis() - lastNewCandidateTime;
-                    if (silence > 3000) {
-                        break;
-                    }
-                    Thread.sleep(100);
                 }
-
-                gatheringComplete.set(true);
-                sendGatheringComplete();
                 maybeStartConnectivityCheck();
-            } catch (Exception e) {
-                System.err.println("Candidate gathering error: " + e.getMessage());
             }
         });
     }
@@ -439,6 +474,11 @@ public class ICEManager {
             component.addRemoteCandidate(remoteCandidate);
             String ipVersion = addr.isIPv6() ? "IPv6" : "IPv4";
             System.out.println("Added remote candidate: " + addr + " (" + type + ", " + ipVersion + ")");
+            ICEEventListener listener = eventListener;
+            if (listener != null) {
+                listener.onRemoteCandidateAdded(remoteCandidate);
+            }
+            maybeStartConnectivityCheck();
         } catch (Exception e) {
             System.err.println("Error adding remote candidate: " + e.getMessage());
         }
@@ -467,74 +507,109 @@ public class ICEManager {
     }
 
     private void addIpv6Harvesters(Agent agent) {
+        boolean added = false;
+        boolean ipv6Capable = hasLocalIpv6Capability();
         try {
             InetAddress[] resolvedAddresses = InetAddress.getAllByName(stunServer);
+            InetAddress firstIpv4 = null;
             for (InetAddress resolved : resolvedAddresses) {
                 if (resolved instanceof Inet6Address) {
-                    TransportAddress ipv6Address = new TransportAddress(resolved, stunPort, Transport.UDP);
-                    agent.addCandidateHarvester(new StunCandidateHarvester(ipv6Address));
-                    System.out.println("IPv6 STUN harvester added: " + ipv6Address.getHostAddress());
-                    return;
+                    registerIpv6Harvester(agent, resolved);
+                    added = true;
+                } else if (firstIpv4 == null) {
+                    firstIpv4 = resolved;
+                }
+            }
+
+            if (!added && ipv6Capable && firstIpv4 != null) {
+                String nat64Host = synthesizeNat64Address(firstIpv4);
+                if (nat64Host != null) {
+                    try {
+                        InetAddress nat64Address = InetAddress.getByName(nat64Host);
+                        registerIpv6Harvester(agent, nat64Address);
+                        added = true;
+                        System.out.println("Synthesized NAT64 STUN harvester added: " + nat64Host);
+                    } catch (Exception nat64Ex) {
+                        System.err.println("Failed to configure NAT64 STUN harvester: " + nat64Ex.getMessage());
+                    }
                 }
             }
         } catch (Exception e) {
             System.err.println("Unable to resolve IPv6 STUN address for " + stunServer + ": " + e.getMessage());
         }
-    }
 
-    private void maybeStartConnectivityCheck() {
-        if (gatheringComplete.get() && remoteGatheringComplete.get() && !connected.get()) {
-            if (connectivityStarted.compareAndSet(false, true)) {
-                startConnectivityCheckAsync();
-            }
+        if (!added) {
+            System.out.println("IPv6 STUN harvesters unavailable for " + stunServer);
         }
     }
 
-    private void startConnectivityCheckAsync() {
-        workerExecutor.submit(() -> {
-            if (!runConnectivityCheck()) {
-                handleConnectionFailure("Connectivity check failed");
-            }
-        });
+    private void registerIpv6Harvester(Agent agent, InetAddress address) {
+        TransportAddress udp = new TransportAddress(address, stunPort, Transport.UDP);
+        agent.addCandidateHarvester(new StunCandidateHarvester(udp));
+        TransportAddress tcp = new TransportAddress(address, stunPort, Transport.TCP);
+        agent.addCandidateHarvester(new StunCandidateHarvester(tcp));
+        System.out.println("IPv6 STUN harvester added: " + udp.getHostAddress());
     }
 
-    private boolean runConnectivityCheck() {
-        try {
-            if (iceAgent == null) {
-                throw new IllegalStateException("ICE agent not initialised");
-            }
-            iceAgent.startConnectivityEstablishment();
+    private String synthesizeNat64Address(InetAddress ipv4Address) {
+        byte[] octets = ipv4Address.getAddress();
+        if (octets == null || octets.length != 4) {
+            return null;
+        }
+        return String.format("64:ff9b::%d.%d.%d.%d",
+            octets[0] & 0xFF,
+            octets[1] & 0xFF,
+            octets[2] & 0xFF,
+            octets[3] & 0xFF);
+    }
 
-            long startTime = System.currentTimeMillis();
-            while (!connected.get() && !closed &&
-                   (System.currentTimeMillis() - startTime) < 30000) {
-                if (iceAgent.getState() == IceProcessingState.FAILED) {
-                    return false;
+    private boolean hasLocalIpv6Capability() {
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces != null && interfaces.hasMoreElements()) {
+                NetworkInterface iface = interfaces.nextElement();
+                if (!iface.isUp() || iface.isLoopback() || iface.isVirtual()) {
+                    continue;
                 }
-                Thread.sleep(100);
-            }
-            if (connected.get()) {
-                System.out.println("P2P connection established!");
-                if (selectedPair != null) {
-                    System.out.println("  Local:  " + selectedPair.getLocalCandidate().getTransportAddress());
-                    System.out.println("  Remote: " + selectedPair.getRemoteCandidate().getTransportAddress());
+                Enumeration<InetAddress> addresses = iface.getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    InetAddress address = addresses.nextElement();
+                    if (address instanceof Inet6Address && !address.isLinkLocalAddress()) {
+                        return true;
+                    }
                 }
-                return true;
             }
-            return false;
         } catch (Exception e) {
-            System.err.println("Connectivity check error: " + e.getMessage());
-            return false;
+            System.err.println("Failed to determine IPv6 capability: " + e.getMessage());
+        }
+        return false;
+    }
+
+    private void maybeStartConnectivityCheck() {
+        if (iceAgent == null || component == null) {
+            return;
+        }
+
+        boolean remoteReady = remoteGatheringComplete.get() || !component.getRemoteCandidates().isEmpty();
+        boolean localReady = gatheringComplete.get() || component.getLocalCandidateCount() > 0;
+
+        if (remoteReady && localReady && connectivityStarted.compareAndSet(false, true)) {
+            System.out.println("Starting ICE connectivity establishment");
+            iceAgent.startConnectivityEstablishment();
         }
     }
 
     private void handleConnectionFailure(String reason) {
-        if (closed) {
+        if (closed.get()) {
             return;
         }
         int attempt = retryCounter.incrementAndGet();
         if (attempt > MAX_RETRIES) {
             System.err.println("Maximum ICE retries reached for session " + sessionId);
+            ICEEventListener listener = eventListener;
+            if (listener != null) {
+                listener.onFailure("Maximum ICE retries reached");
+            }
             return;
         }
         long delay = (long) Math.pow(2, attempt - 1) * BASE_RETRY_DELAY_MS;
@@ -543,7 +618,7 @@ public class ICEManager {
     }
 
     private void restartIce(String reason, boolean notifyServer, int attempt) {
-        if (closed || !restarting.compareAndSet(false, true)) {
+        if (closed.get() || !restarting.compareAndSet(false, true)) {
             return;
         }
         try {
@@ -561,13 +636,25 @@ public class ICEManager {
                     .build();
                 sendStreamMessage(message);
             }
-            startCandidateGathering();
         } catch (Exception e) {
             System.err.println("ICE restart failed: " + e.getMessage());
             handleConnectionFailure("Restart error: " + e.getMessage());
         } finally {
             restarting.set(false);
         }
+    }
+
+    private void scheduleIceRestart(String reason) {
+        int attempt = retryCounter.incrementAndGet();
+        if (attempt > MAX_RETRIES) {
+            System.err.println("Maximum ICE retries reached for session " + sessionId + " (stream restart)");
+            ICEEventListener listener = eventListener;
+            if (listener != null) {
+                listener.onFailure("Maximum ICE retries reached");
+            }
+            return;
+        }
+        scheduler.execute(() -> restartIce(reason, true, attempt));
     }
 
     private void handleRemoteRestart(SafeRoomProto.ICERestart restart) {
@@ -581,14 +668,16 @@ public class ICEManager {
      * Releases all resources associated with the ICE manager.
      */
     public void close() {
-        closed = true;
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
         if (sessionId != null && !sessionId.isEmpty()) {
             try {
                 SafeRoomProto.P2PTerminateRequest request = SafeRoomProto.P2PTerminateRequest.newBuilder()
                     .setSessionId(sessionId)
                     .setUsername(localUsername)
                     .build();
-                blockingStub.terminateP2PSession(request);
+                UDPHoleGrpc.newBlockingStub(grpcChannel).terminateP2PSession(request);
             } catch (Exception e) {
                 System.err.println("Error terminating P2P session: " + e.getMessage());
             }
@@ -606,7 +695,6 @@ public class ICEManager {
 
         cleanupAgent();
         scheduler.shutdownNow();
-        workerExecutor.shutdownNow();
         System.out.println("ICE Manager closed");
     }
 
@@ -616,5 +704,25 @@ public class ICEManager {
 
     public CandidatePair getSelectedPair() {
         return selectedPair;
+    }
+
+    private CandidatePair extractSelectedPair() {
+        if (component != null) {
+            CandidatePair pair = component.getSelectedPair();
+            if (pair != null) {
+                return pair;
+            }
+        }
+        if (iceAgent != null) {
+            for (IceMediaStream stream : iceAgent.getStreams()) {
+                for (Component comp : stream.getComponents()) {
+                    CandidatePair pair = comp.getSelectedPair();
+                    if (pair != null) {
+                        return pair;
+                    }
+                }
+            }
+        }
+        return null;
     }
 }

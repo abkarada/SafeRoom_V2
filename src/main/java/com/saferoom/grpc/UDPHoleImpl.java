@@ -935,36 +935,6 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 		}
 	}
 
-	 @Override
-    public void sendICECandidate(SafeRoomProto.ICECandidateTrickle request,
-                                StreamObserver<SafeRoomProto.Status> responseObserver) {
-
-        String sessionId = request.getSessionId();
-        String fromUser = request.getFromUser();
-        SafeRoomProto.ICECandidate candidate = request.getCandidate();
-        
-        String ipVersion = (candidate.getIp() != null && candidate.getIp().contains(":")) ? "IPv6" : "IPv4";
-        LOGGER.log(Level.INFO, () -> String.format(
-            "ICE candidate received from %s [%s] for session %s: %s:%d (%s/%s)",
-            fromUser,
-            ipVersion,
-            sessionId,
-            candidate.getIp(),
-            candidate.getPort(),
-            candidate.getProtocol(),
-            candidate.getType()));
-        
-        boolean success = P2PSessionManager.addCandidate(sessionId, fromUser, candidate);
-        
-        SafeRoomProto.Status response = SafeRoomProto.Status.newBuilder()
-            .setMessage(success ? "Candidate added" : "Failed to add candidate")
-            .setCode(success ? 0 : 1)
-            .build();
-        
-        responseObserver.onNext(response);
-        responseObserver.onCompleted();
-    }
-
     @Override
     public StreamObserver<SafeRoomProto.ICEStreamMessage> streamICE(
         final StreamObserver<SafeRoomProto.ICEStreamMessage> responseObserver) {
@@ -1053,51 +1023,6 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
                 responseObserver.onCompleted();
             }
         };
-    }
-    
-    @Override
-    public void pollICECandidates(SafeRoomProto.ICEPollRequest request,
-                                 StreamObserver<SafeRoomProto.ICEPollResponse> responseObserver) {
-        
-        String sessionId = request.getSessionId();
-        String username = request.getUsername();
-        int lastIndex = request.getLastCandidateIndex();
-        
-        List<SafeRoomProto.ICECandidate> newCandidates = 
-            P2PSessionManager.pollCandidates(sessionId, username, lastIndex);
-        
-        boolean remoteComplete = P2PSessionManager.isRemoteGatheringComplete(sessionId, username);
-        
-        SafeRoomProto.ICEPollResponse response = SafeRoomProto.ICEPollResponse.newBuilder()
-            .setSuccess(true)
-            .addAllCandidates(newCandidates)
-            .setGatheringComplete(remoteComplete)
-            .build();
-        
-        responseObserver.onNext(response);
-        responseObserver.onCompleted();
-    }
-    
-    @Override
-    public void iCEGatheringComplete(SafeRoomProto.ICECompleteRequest request,
-                                    StreamObserver<SafeRoomProto.Status> responseObserver) {
-        
-        String sessionId = request.getSessionId();
-        String username = request.getUsername();
-        
-        boolean success = P2PSessionManager.markGatheringComplete(sessionId, username);
-        
-        System.out.println("ICE Gathering Complete:");
-        System.out.println("  Session: " + sessionId);
-        System.out.println("  User: " + username);
-        
-        SafeRoomProto.Status response = SafeRoomProto.Status.newBuilder()
-            .setMessage(success ? "Gathering marked complete" : "Failed")
-            .setCode(success ? 0 : 1)
-            .build();
-        
-        responseObserver.onNext(response);
-        responseObserver.onCompleted();
     }
     
     @Override
