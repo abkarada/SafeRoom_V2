@@ -4,6 +4,9 @@ import com.saferoom.grpc.SafeRoomProto;
 import io.grpc.stub.StreamObserver;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -15,6 +18,50 @@ public class P2PSessionManager {
     private static final ConcurrentHashMap<String, Map<String, StreamObserver<SafeRoomProto.ICEStreamMessage>>> streamObservers =
         new ConcurrentHashMap<>();
     
+    private static final ConcurrentMap<String, CopyOnWriteArraySet<StreamObserver<SafeRoomProto.ServerEvent>>> serverEventObservers = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<String, ConcurrentLinkedQueue<SafeRoomProto.ServerEvent>> pendingServerEvents =
+        new ConcurrentHashMap<>();
+    
+    public static void registerServerEventObserver(String username,
+                                                   StreamObserver<SafeRoomProto.ServerEvent> observer) {
+        serverEventObservers
+            .computeIfAbsent(username, k -> new CopyOnWriteArraySet<>())
+            .add(observer);
+
+        ConcurrentLinkedQueue<SafeRoomProto.ServerEvent> backlog = pendingServerEvents.get(username);
+        if (backlog != null) {
+            SafeRoomProto.ServerEvent event;
+            while ((event = backlog.poll()) != null) {
+                safeOnNext(observer, event);
+            }
+        }
+    }
+
+    public static void unregisterServerEventObserver(String username,
+                                                     StreamObserver<SafeRoomProto.ServerEvent> observer) {
+        CopyOnWriteArraySet<StreamObserver<SafeRoomProto.ServerEvent>> observers = serverEventObservers.get(username);
+        if (observers != null) {
+            observers.remove(observer);
+            if (observers.isEmpty()) {
+                serverEventObservers.remove(username);
+            }
+        }
+    }
+
+    public static void publishServerEvent(String username, SafeRoomProto.ServerEvent event) {
+        CopyOnWriteArraySet<StreamObserver<SafeRoomProto.ServerEvent>> observers = serverEventObservers.get(username);
+        if (observers == null || observers.isEmpty()) {
+            pendingServerEvents
+                .computeIfAbsent(username, k -> new ConcurrentLinkedQueue<>())
+                .add(event);
+            return;
+        }
+
+        for (StreamObserver<SafeRoomProto.ServerEvent> observer : observers) {
+            safeOnNext(observer, event);
+        }
+    }
+
     public static class P2PSession {
         String sessionId;
         String user1;
@@ -275,6 +322,17 @@ public class P2PSessionManager {
                 observer.onNext(message);
             } catch (RuntimeException e) {
                 System.err.println("Failed to push ICE stream message: " + e.getMessage());
+            }
+        }
+    }
+
+    private static void safeOnNext(StreamObserver<SafeRoomProto.ServerEvent> observer,
+                                   SafeRoomProto.ServerEvent event) {
+        synchronized (observer) {
+            try {
+                observer.onNext(event);
+            } catch (RuntimeException e) {
+                System.err.println("Failed to push server event: " + e.getMessage());
             }
         }
     }

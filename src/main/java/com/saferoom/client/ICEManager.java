@@ -6,7 +6,11 @@ import io.grpc.ManagedChannel;
 import io.grpc.stub.StreamObserver;
 import java.net.Inet6Address;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
+import java.nio.ByteBuffer;
+import java.nio.channels.DatagramChannel;
+import java.nio.charset.StandardCharsets;
 import java.util.Enumeration;
 import java.util.Objects;
 import java.util.Set;
@@ -705,12 +709,61 @@ public class ICEManager {
         System.out.println("ICE Manager closed");
     }
 
+    public boolean awaitConnected(long timeout, java.util.concurrent.TimeUnit unit) throws InterruptedException {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        while (System.nanoTime() < deadline) {
+            if (connected.get()) {
+                return true;
+            }
+            Thread.sleep(100);
+        }
+        return connected.get();
+    }
+
     public boolean isConnected() {
         return connected.get();
     }
 
     public CandidatePair getSelectedPair() {
         return selectedPair;
+    }
+
+    public boolean sendTextMessage(String message) {
+        CandidatePair pair = extractSelectedPair();
+        if (pair == null) {
+            System.err.println("Cannot send message: no ICE candidate pair selected");
+            return false;
+        }
+
+        if (message == null) {
+            message = "";
+        }
+
+        String payload = localUsername + "::" + message;
+        ByteBuffer buffer = StandardCharsets.UTF_8.encode(payload);
+
+        TransportAddress remoteAddress = pair.getRemoteCandidate().getTransportAddress();
+        InetAddress remoteInet = remoteAddress.getAddress();
+        if (remoteInet == null) {
+            try {
+                remoteInet = InetAddress.getByName(remoteAddress.getHostName());
+            } catch (Exception e) {
+                System.err.println("Unable to resolve remote ICE address: " + e.getMessage());
+                return false;
+            }
+        }
+
+        InetSocketAddress target = new InetSocketAddress(remoteInet, remoteAddress.getPort());
+        try (DatagramChannel channel = DatagramChannel.open()) {
+            channel.configureBlocking(true);
+            buffer.rewind();
+            channel.send(buffer, target);
+            System.out.println("Sent P2P message to " + remoteAddress + " (length: " + payload.length() + " bytes)");
+            return true;
+        } catch (Exception e) {
+            System.err.println("Failed to send P2P message: " + e.getMessage());
+            return false;
+        }
     }
 
     private CandidatePair extractSelectedPair() {

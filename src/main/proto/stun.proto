@@ -55,7 +55,16 @@ rpc ICEGatheringComplete(ICECompleteRequest) returns (Status);
 
 // Trickle ICE için çift yönlü streaming kanal
 rpc StreamICE(stream ICEStreamMessage) returns (stream ICEStreamMessage);
-    
+
+// Sunucu taraflı olay akışı
+rpc StreamServerEvents(ServerEventRequest) returns (stream ServerEvent);
+
+// Bir eşin ICE başlatmasını iste
+rpc RequestPeerToStartIce(StartIceForPeer) returns (Status);
+
+// ICE başarısız olursa relay üzerinden mesaj gönder
+rpc RelayMessage(StartIceForPeer) returns (Status);
+
 // P2P session'ı sonlandır
 rpc TerminateP2PSession(P2PTerminateRequest) returns (Status);
 
@@ -118,6 +127,29 @@ message ICEStreamMessage {
         ICEGatheringStatus gathering = 4;
         ICERestart restart = 5;
     }
+}
+
+message ServerEventRequest {
+    string username = 1;
+}
+
+message StartIceForPeer {
+    string fromUser = 1;
+    string toUser = 2;
+    string message = 3;
+}
+
+message ServerEvent {
+    enum EventType {
+        UNKNOWN = 0;
+        START_ICE = 1;
+        RELAY_MESSAGE = 2;
+    }
+
+    EventType type = 1;
+    string fromUser = 2;
+    string toUser = 3;
+    string message = 4;
 }
 
 message ICECompleteRequest {

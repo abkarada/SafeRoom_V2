@@ -10,6 +10,7 @@ import io.grpc.ManagedChannel;
 import io.grpc.netty.shaded.io.grpc.netty.GrpcSslContexts;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import io.grpc.netty.shaded.io.netty.handler.ssl.SslContext;
+import io.grpc.stub.StreamObserver;
 import java.io.File;
 import java.net.Inet6Address;
 import java.net.InetAddress;
@@ -19,6 +20,11 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ConcurrentHashMap;
 import com.saferoom.client.ICEManager.TurnConfig;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class ClientMenu{
 	public static String Server = SafeRoomServer.ServerIP;
@@ -36,6 +42,23 @@ public class ClientMenu{
 
         // P2P bağlantı yönetimi
         private static Map<String, ICEManager> activeP2PConnections = new ConcurrentHashMap<>();
+
+        private static volatile String currentUser;
+        private static final ExecutorService SERVER_EVENT_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "server-events-dispatch");
+                t.setDaemon(true);
+                return t;
+        });
+        private static final ScheduledExecutorService SERVER_EVENT_SCHEDULER = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "server-events-reconnect");
+                t.setDaemon(true);
+                return t;
+        });
+        private static final AtomicBoolean SERVER_EVENT_ACTIVE = new AtomicBoolean(false);
+        private static final AtomicBoolean SERVER_EVENT_STOPPED = new AtomicBoolean(false);
+        private static final Object SERVER_EVENT_LOCK = new Object();
+        private static volatile String serverEventUsername;
+        private static ScheduledFuture<?> serverEventReconnectTask;
 
 	static{
 		try{
@@ -100,8 +123,120 @@ public class ClientMenu{
                 return false;
         }
 
-	public static String Login(String username, String Password) {
-		try {
+        private static void startServerEventStream(String username) {
+                if (username == null || username.isBlank()) {
+                        return;
+                }
+                synchronized (SERVER_EVENT_LOCK) {
+                        serverEventUsername = username;
+                        SERVER_EVENT_STOPPED.set(false);
+                        if (SERVER_EVENT_ACTIVE.get()) {
+                                return;
+                        }
+                }
+                openServerEventStream();
+        }
+
+        private static void openServerEventStream() {
+                String usernameSnapshot;
+                synchronized (SERVER_EVENT_LOCK) {
+                        if (SERVER_EVENT_STOPPED.get()) {
+                                return;
+                        }
+                        if (serverEventUsername == null || serverEventUsername.isBlank()) {
+                                return;
+                        }
+                        if (SERVER_EVENT_ACTIVE.get()) {
+                                return;
+                        }
+                        usernameSnapshot = serverEventUsername;
+                        SERVER_EVENT_ACTIVE.set(true);
+                }
+
+                SafeRoomProto.ServerEventRequest request = SafeRoomProto.ServerEventRequest.newBuilder()
+                        .setUsername(usernameSnapshot)
+                        .build();
+
+                UDPHoleGrpc.UDPHoleStub stub = UDPHoleGrpc.newStub(STUB_CHANNEL);
+                stub.streamServerEvents(request, new StreamObserver<SafeRoomProto.ServerEvent>() {
+                        @Override
+                        public void onNext(SafeRoomProto.ServerEvent value) {
+                                SERVER_EVENT_EXECUTOR.execute(() -> handleServerEvent(value));
+                        }
+
+                        @Override
+                        public void onError(Throwable t) {
+                                System.err.println("Server event stream error: " + t.getMessage());
+                                scheduleServerEventReconnect();
+                        }
+
+                        @Override
+                        public void onCompleted() {
+                                System.out.println("Server event stream completed for " + usernameSnapshot);
+                                scheduleServerEventReconnect();
+                        }
+                });
+        }
+
+        private static void scheduleServerEventReconnect() {
+                synchronized (SERVER_EVENT_LOCK) {
+                        SERVER_EVENT_ACTIVE.set(false);
+                        if (SERVER_EVENT_STOPPED.get()) {
+                                return;
+                        }
+                        if (serverEventReconnectTask != null && !serverEventReconnectTask.isDone()) {
+                                return;
+                        }
+                        serverEventReconnectTask = SERVER_EVENT_SCHEDULER.schedule(() -> openServerEventStream(), 3, TimeUnit.SECONDS);
+                }
+        }
+
+        private static void handleServerEvent(SafeRoomProto.ServerEvent event) {
+                if (event == null) {
+                        return;
+                }
+
+                SafeRoomProto.ServerEvent.EventType type = event.getType();
+                if (type == SafeRoomProto.ServerEvent.EventType.START_ICE) {
+                        String initiator = event.getFromUser();
+                        String localUser;
+                        synchronized (SERVER_EVENT_LOCK) {
+                                localUser = serverEventUsername;
+                        }
+                        if (initiator == null || initiator.isBlank() || localUser == null || localUser.isBlank()) {
+                                return;
+                        }
+                        if (initiator.equals(localUser)) {
+                                return;
+                        }
+                        try {
+                                startP2PConnection(localUser, initiator);
+                        } catch (Exception e) {
+                                System.err.println("Failed to auto-start ICE for " + initiator + ": " + e.getMessage());
+                        }
+                } else if (type == SafeRoomProto.ServerEvent.EventType.RELAY_MESSAGE) {
+                        String fromUser = event.getFromUser();
+                        String message = event.getMessage();
+                        System.out.println("[Relay] Message from " + fromUser + ": " + message);
+                } else {
+                        System.out.println("Received server event: " + type);
+                }
+        }
+
+        private static void stopServerEventStream() {
+                synchronized (SERVER_EVENT_LOCK) {
+                        SERVER_EVENT_STOPPED.set(true);
+                        SERVER_EVENT_ACTIVE.set(false);
+                        serverEventUsername = null;
+                        if (serverEventReconnectTask != null) {
+                                serverEventReconnectTask.cancel(false);
+                                serverEventReconnectTask = null;
+                        }
+                }
+        }
+
+        public static String Login(String username, String Password) {
+                try {
 			UDPHoleGrpc.UDPHoleBlockingStub client = UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
 				.withDeadlineAfter(10, TimeUnit.SECONDS);
 			
@@ -115,15 +250,17 @@ public class ClientMenu{
 			String message = stats.getMessage();
 			int code = stats.getCode();
 			
-			switch(code){
-				case 0:
-					System.out.println("Success!");
-					System.out.printf("Logged in as: %s%n", username);
-					return message; 
-				case 1:
-					if(message.equals("N_REGISTER")){
-						System.out.println("Not Registered");
-						return "N_REGISTER";
+                        switch(code){
+                                case 0:
+                                        System.out.println("Success!");
+                                        System.out.printf("Logged in as: %s%n", username);
+                                        currentUser = username;
+                                        startServerEventStream(username);
+                                        return message;
+                                case 1:
+                                        if(message.equals("N_REGISTER")){
+                                                System.out.println("Not Registered");
+                                                return "N_REGISTER";
 					} else if(message.equals("WRONG_PASSWORD")){
 						System.out.println("Wrong Password");
 						return "WRONG_PASSWORD";
@@ -553,12 +690,17 @@ public class ClientMenu{
 	 * Channel'ı düzgün bir şekilde kapatır
 	 * Uygulamadan çıkarken çağrılmalı
 	 */
-		public static void shutdownChannel() {
-		if (STUB_CHANNEL != null && !STUB_CHANNEL.isShutdown()) {
-			try {
-				System.out.println("gRPC channel kapatılıyor...");
-				STUB_CHANNEL.shutdown().awaitTermination(5, TimeUnit.SECONDS);
-				System.out.println("gRPC channel başarıyla kapatıldı");
+                public static void shutdownChannel() {
+                stopServerEventStream();
+                SERVER_EVENT_STOPPED.set(true);
+                SERVER_EVENT_ACTIVE.set(false);
+                SERVER_EVENT_EXECUTOR.shutdownNow();
+                SERVER_EVENT_SCHEDULER.shutdownNow();
+                if (STUB_CHANNEL != null && !STUB_CHANNEL.isShutdown()) {
+                        try {
+                                System.out.println("gRPC channel kapatılıyor...");
+                                STUB_CHANNEL.shutdown().awaitTermination(5, TimeUnit.SECONDS);
+                                System.out.println("gRPC channel başarıyla kapatıldı");
 			} catch (InterruptedException e) {
 				System.err.println("Channel kapatılırken hata: " + e.getMessage());
 				STUB_CHANNEL.shutdownNow();
@@ -581,7 +723,7 @@ public class ClientMenu{
      */
     public static ICEManager startP2PConnection(String currentUser, String targetUser) throws Exception {
         System.out.println("Starting P2P connection: " + currentUser + " -> " + targetUser);
-        
+
         // Zaten bağlantı varsa onu döndür
         if (activeP2PConnections.containsKey(targetUser)) {
             ICEManager existing = activeP2PConnections.get(targetUser);
@@ -648,10 +790,68 @@ public class ClientMenu{
             throw e;
         }
     }
-    
+
+    public static boolean sendMessageAutoICE(String fromUser, String toUser, String text) {
+        if (fromUser == null || fromUser.isBlank() || toUser == null || toUser.isBlank()) {
+            throw new IllegalArgumentException("fromUser and toUser must be provided");
+        }
+
+        startServerEventStream(fromUser);
+
+        ICEManager iceManager = null;
+        boolean sentViaP2P = false;
+
+        try {
+            iceManager = startP2PConnection(fromUser, toUser);
+        } catch (Exception e) {
+            System.err.println("Failed to start local ICE session: " + e.getMessage());
+        }
+
+        try {
+            SafeRoomProto.StartIceForPeer request = SafeRoomProto.StartIceForPeer.newBuilder()
+                .setFromUser(fromUser)
+                .setToUser(toUser)
+                .build();
+            UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
+                .withDeadlineAfter(5, TimeUnit.SECONDS)
+                .requestPeerToStartIce(request);
+        } catch (Exception e) {
+            System.err.println("Failed to trigger remote ICE start: " + e.getMessage());
+        }
+
+        if (iceManager != null) {
+            try {
+                if (iceManager.awaitConnected(10, TimeUnit.SECONDS)) {
+                    sentViaP2P = iceManager.sendTextMessage(text == null ? "" : text);
+                } else {
+                    System.err.println("Timed out waiting for ICE connectivity between " + fromUser + " and " + toUser);
+                }
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        if (!sentViaP2P) {
+            try {
+                SafeRoomProto.StartIceForPeer relayRequest = SafeRoomProto.StartIceForPeer.newBuilder()
+                    .setFromUser(fromUser)
+                    .setToUser(toUser)
+                    .setMessage(text == null ? "" : text)
+                    .build();
+                UDPHoleGrpc.newBlockingStub(STUB_CHANNEL)
+                    .withDeadlineAfter(5, TimeUnit.SECONDS)
+                    .relayMessage(relayRequest);
+            } catch (Exception e) {
+                System.err.println("Failed to relay message via server: " + e.getMessage());
+            }
+        }
+
+        return sentViaP2P;
+    }
+
     /**
      * P2P bağlantısını kapat
-     * 
+     *
      * @param targetUser Bağlantısı kesilecek kullanıcı
      */
     public static void closeP2PConnection(String targetUser) {

@@ -31,6 +31,7 @@ import java.text.SimpleDateFormat;
 import java.sql.Timestamp;
 
 
+import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 
 public class UDPHoleImpl extends UDPHoleGrpc.UDPHoleImplBase {
@@ -871,6 +872,123 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 	}	
 	
 	// P2P METHODS
+	@Override
+	public void streamServerEvents(SafeRoomProto.ServerEventRequest request,
+	                               StreamObserver<SafeRoomProto.ServerEvent> responseObserver) {
+		String username = request.getUsername();
+
+		if (username == null || username.isBlank()) {
+			responseObserver.onError(io.grpc.Status.INVALID_ARGUMENT
+			        .withDescription("username is required")
+			        .asRuntimeException());
+			return;
+		}
+
+		System.out.println("Registering server event stream for: " + username);
+
+		P2PSessionManager.registerServerEventObserver(username, responseObserver);
+
+		if (responseObserver instanceof ServerCallStreamObserver<SafeRoomProto.ServerEvent> serverObserver) {
+			serverObserver.setOnCancelHandler(() ->
+			        P2PSessionManager.unregisterServerEventObserver(username, responseObserver));
+			serverObserver.setOnCloseHandler(() ->
+			        P2PSessionManager.unregisterServerEventObserver(username, responseObserver));
+		}
+	}
+
+	@Override
+	public void requestPeerToStartIce(SafeRoomProto.StartIceForPeer request,
+	                                  StreamObserver<SafeRoomProto.Status> responseObserver) {
+		String fromUser = request.getFromUser();
+		String toUser = request.getToUser();
+
+		if (fromUser == null || fromUser.isBlank() || toUser == null || toUser.isBlank()) {
+			SafeRoomProto.Status status = SafeRoomProto.Status.newBuilder()
+			        .setMessage("fromUser and toUser must be provided")
+			        .setCode(2)
+			        .build();
+			responseObserver.onNext(status);
+			responseObserver.onCompleted();
+			return;
+		}
+
+		try {
+			boolean targetOnline = DBManager.isUserOnline(toUser);
+			if (!targetOnline) {
+				System.out.println("Target user " + toUser + " is offline; queuing START_ICE event");
+			}
+
+			SafeRoomProto.ServerEvent event = SafeRoomProto.ServerEvent.newBuilder()
+			        .setType(SafeRoomProto.ServerEvent.EventType.START_ICE)
+			        .setFromUser(fromUser)
+			        .setToUser(toUser)
+			        .build();
+
+			P2PSessionManager.publishServerEvent(toUser, event);
+
+			SafeRoomProto.Status status = SafeRoomProto.Status.newBuilder()
+			        .setMessage("START_ICE dispatched")
+			        .setCode(0)
+			        .build();
+			responseObserver.onNext(status);
+			responseObserver.onCompleted();
+		} catch (Exception e) {
+			System.err.println("Failed to dispatch START_ICE event: " + e.getMessage());
+			SafeRoomProto.Status status = SafeRoomProto.Status.newBuilder()
+			        .setMessage("Error: " + e.getMessage())
+			        .setCode(2)
+			        .build();
+			responseObserver.onNext(status);
+			responseObserver.onCompleted();
+		}
+	}
+
+	@Override
+	public void relayMessage(SafeRoomProto.StartIceForPeer request,
+	                         StreamObserver<SafeRoomProto.Status> responseObserver) {
+		String fromUser = request.getFromUser();
+		String toUser = request.getToUser();
+		String message = request.getMessage();
+
+		if (fromUser == null || fromUser.isBlank() || toUser == null || toUser.isBlank()) {
+			SafeRoomProto.Status status = SafeRoomProto.Status.newBuilder()
+			        .setMessage("fromUser and toUser must be provided")
+			        .setCode(2)
+			        .build();
+			responseObserver.onNext(status);
+			responseObserver.onCompleted();
+			return;
+		}
+
+		if (message == null || message.isBlank()) {
+			SafeRoomProto.Status status = SafeRoomProto.Status.newBuilder()
+			        .setMessage("message cannot be empty")
+			        .setCode(2)
+			        .build();
+			responseObserver.onNext(status);
+			responseObserver.onCompleted();
+			return;
+		}
+
+		System.out.println("Relaying message from " + fromUser + " to " + toUser + ": " + message);
+
+		SafeRoomProto.ServerEvent event = SafeRoomProto.ServerEvent.newBuilder()
+		        .setType(SafeRoomProto.ServerEvent.EventType.RELAY_MESSAGE)
+		        .setFromUser(fromUser)
+		        .setToUser(toUser)
+		        .setMessage(message)
+		        .build();
+
+		P2PSessionManager.publishServerEvent(toUser, event);
+
+		SafeRoomProto.Status status = SafeRoomProto.Status.newBuilder()
+		        .setMessage("Message relayed")
+		        .setCode(0)
+		        .build();
+		responseObserver.onNext(status);
+		responseObserver.onCompleted();
+	}
+
 	@Override
 	public void initiateP2PConnection(SafeRoomProto.P2PInitRequest request,
                                      StreamObserver<SafeRoomProto.P2PInitResponse> responseObserver) {
