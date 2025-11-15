@@ -238,6 +238,19 @@ message WebRTCSignal {
         P2P_ANSWER = 11;        // P2P messaging DataChannel answer (NOT for calls)
         SCREEN_SHARE_OFFER = 12; // Screen sharing renegotiation offer
         SCREEN_SHARE_STOP = 13;  // Screen sharing stopped
+        
+        // ===============================
+        // SDRT (Serverless Distributed Relay Tree) Signals
+        // ===============================
+        TREE_JOIN = 14;         // Request to join tree (client → server)
+        TREE_PARENT_ASSIGN = 15; // Server assigns parent (server → client)
+        TREE_CONNECT = 16;      // Establish DataChannel to parent/child (peer-to-peer)
+        TREE_PROMOTE = 17;      // Promote node to RELAY/ROOT (server → client)
+        TREE_DEMOTE = 18;       // Demote node to lower role (server → client)
+        TREE_REBALANCE = 19;    // Request parent change (client ↔ server)
+        TREE_HEARTBEAT = 20;    // Tree health check (peer-to-peer)
+        TREE_METRICS = 21;      // Report connection metrics (client → server)
+        GROUP_KEY_UPDATE = 22;  // Distribute new group encryption key (server → clients)
     }
     
     SignalType type = 1;        // Sinyal tipi
@@ -260,6 +273,17 @@ message WebRTCSignal {
     // Ek bilgiler
     optional int64 timestamp = 11;
     optional string metadata = 12;  // JSON format extra data
+    
+    // ===============================
+    // SDRT Fields (Tree Topology)
+    // ===============================
+    optional string roomId = 13;        // Room ID for multi-room support
+    optional string nodeRole = 14;      // "LEAF", "RELAY", or "ROOT"
+    optional string parentUserId = 15;  // Assigned parent user ID
+    optional string groupKey = 16;      // AES-256-GCM group encryption key (base64)
+    optional string metricsData = 17;   // JSON: {rtt, bandwidth, packetLoss, cpuLoad}
+    optional int32 childCount = 18;     // Current number of children
+    optional bool canAcceptChildren = 19; // Can this node accept more children?
 }
 
 message WebRTCResponse {
