@@ -1,14 +1,15 @@
 package com.saferoom.webrtc.relay;
 
 import com.saferoom.crypto.GroupKeyManager;
+import com.saferoom.webrtc.relay.qos.*;
 import dev.onvoid.webrtc.*;
 import dev.onvoid.webrtc.media.MediaStreamTrack;
 import dev.onvoid.webrtc.media.video.VideoFrame;
 import dev.onvoid.webrtc.media.video.VideoTrack;
 
 import java.nio.ByteBuffer;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -29,6 +30,11 @@ import java.util.logging.Logger;
  * - Send via DataChannel (no decode/re-encode at relay nodes)
  * - Receiver gets RTP packets and feeds to WebRTC decoder
  * 
+ * QoS Features:
+ * - Adaptive bitrate control (GCC algorithm)
+ * - Forward Error Correction (XOR-based FEC)
+ * - Jitter buffer for smooth playback
+ * 
  * This achieves multi-hop forwarding WITHOUT decode/re-encode overhead!
  */
 public class SDRTMediaBridge {
@@ -41,6 +47,12 @@ public class SDRTMediaBridge {
     private final TreeNode treeNode;
     private final GroupKeyManager keyManager;
     
+    // QoS components
+    private final AdaptiveBitrateController bitrateController;
+    private final FECEncoder fecEncoder;
+    private final FECDecoder fecDecoder;
+    private final JitterBuffer jitterBuffer;
+    
     // DataChannel for SDRT communication
     private RTCDataChannel sdrtChannel;
     
@@ -52,9 +64,12 @@ public class SDRTMediaBridge {
     private final AtomicInteger outgoingSequence = new AtomicInteger(0);
     private final Map<String, RemoteStreamState> remoteStreams = new ConcurrentHashMap<>();
     
+    // Processing thread pool
+    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
+    
     // Configuration
     private static final String SDRT_CHANNEL_LABEL = "sdrt-media";
-    private static final int MAX_PACKET_SIZE = 1400; // MTU-safe size
+    private static final int JITTER_PLAYOUT_INTERVAL_MS = 20; // 20ms playout interval
     
     /**
      * Remote stream state tracking
@@ -78,6 +93,29 @@ public class SDRTMediaBridge {
         this.roomId = roomId;
         this.treeNode = treeNode;
         this.keyManager = keyManager;
+        
+        // Initialize QoS components
+        ConnectionMetrics metrics = new ConnectionMetrics();
+        this.bitrateController = new AdaptiveBitrateController(metrics);
+        this.fecEncoder = new FECEncoder();
+        this.fecDecoder = new FECDecoder();
+        this.jitterBuffer = new JitterBuffer();
+        
+        // Setup bitrate callback
+        bitrateController.setBitrateCallback(newBitrate -> {
+            if (localVideoTrack != null) {
+                // TODO: Apply bitrate to VideoTrack encoder
+                logger.info(String.format("Target bitrate adjusted to %d kbps", newBitrate / 1000));
+            }
+        });
+        
+        // Start jitter buffer playout task
+        scheduler.scheduleAtFixedRate(
+            this::processJitterBuffer,
+            100, // Initial delay
+            JITTER_PLAYOUT_INTERVAL_MS,
+            TimeUnit.MILLISECONDS
+        );
         
         logger.info(String.format("SDRTMediaBridge created: userId=%s, roomId=%s", 
                                   userId, roomId));
@@ -187,7 +225,8 @@ public class SDRTMediaBridge {
      * 1. WebRTC has already encoded the frame (H264/VP8)
      * 2. We extract the encoded data
      * 3. Encrypt it
-     * 4. Send via DataChannel
+     * 4. Apply FEC
+     * 5. Send via DataChannel
      */
     private void captureAndForwardFrame(VideoFrame frame) {
         if (sdrtChannel == null || sdrtChannel.getState() != RTCDataChannelState.OPEN) {
@@ -221,8 +260,15 @@ public class SDRTMediaBridge {
             );
             packet.setRoomId(roomId);
             
-            // Send to tree (parent or children depending on role)
+            // Send data packet to tree
             sendPacketToTree(packet);
+            
+            // Add to FEC encoder and get FEC packet if generated (every 10 packets)
+            MediaPacket fecPacket = fecEncoder.addPacket(packet);
+            if (fecPacket != null) {
+                fecPacket.setRoomId(roomId);
+                sendPacketToTree(fecPacket);
+            }
             
         } catch (Exception e) {
             logger.log(Level.WARNING, "Failed to capture and forward frame", e);
@@ -300,14 +346,42 @@ public class SDRTMediaBridge {
             // Forward via tree (TreeNode handles routing)
             treeNode.processPacket(packet, packet.getSourceId());
             
-            // If we're destination (LEAF or want to display), decrypt and play
+            // If we're destination (LEAF or want to display), process with QoS
             if (treeNode.getRole() == TreeNode.NodeRole.LEAF || 
                 shouldDisplayStream(packet.getSourceId())) {
-                decryptAndPlayPacket(packet);
+                processIncomingPacketWithQoS(packet);
             }
             
         } catch (Exception e) {
             logger.log(Level.WARNING, "Failed to handle incoming packet", e);
+        }
+    }
+    
+    /**
+     * Process incoming packet with QoS features (FEC + Jitter Buffer)
+     */
+    private void processIncomingPacketWithQoS(MediaPacket packet) {
+        try {
+            // Step 1: FEC Decoding - Recover lost packets if possible
+            List<MediaPacket> recoveredPackets = fecDecoder.processPacket(packet);
+            
+            // Step 2: Add recovered packets to jitter buffer
+            for (MediaPacket recoveredPacket : recoveredPackets) {
+                jitterBuffer.addPacket(recoveredPacket);
+                logger.fine(String.format("Recovered packet via FEC: seq=%d", 
+                    recoveredPacket.getSequenceNumber()));
+            }
+            
+            // Step 3: Add original packet to jitter buffer (if not FEC)
+            if (packet.getType() != MediaPacket.PacketType.FEC) {
+                jitterBuffer.addPacket(packet);
+            }
+            
+            // Note: Jitter buffer playout happens in processJitterBuffer() 
+            // scheduled task (every 20ms)
+            
+        } catch (Exception e) {
+            logger.log(Level.WARNING, "Failed to process incoming packet with QoS", e);
         }
     }
     
@@ -340,6 +414,24 @@ public class SDRTMediaBridge {
             
         } catch (Exception e) {
             logger.log(Level.WARNING, "Failed to decrypt and play packet", e);
+        }
+    }
+    
+    /**
+     * Process jitter buffer and deliver ready packets
+     * Called periodically (every 20ms) to smooth out network jitter
+     */
+    private void processJitterBuffer() {
+        try {
+            List<MediaPacket> readyPackets = jitterBuffer.getReadyPackets();
+            
+            for (MediaPacket packet : readyPackets) {
+                // Decrypt and play each ready packet
+                decryptAndPlayPacket(packet);
+            }
+            
+        } catch (Exception e) {
+            logger.log(Level.WARNING, "Error processing jitter buffer", e);
         }
     }
     
@@ -427,6 +519,20 @@ public class SDRTMediaBridge {
         
         stopCapture();
         
+        // Shutdown QoS components
+        bitrateController.stop();
+        scheduler.shutdown();
+        
+        try {
+            if (!scheduler.awaitTermination(2, TimeUnit.SECONDS)) {
+                scheduler.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            scheduler.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+        
+        // Close DataChannel
         if (sdrtChannel != null) {
             try {
                 sdrtChannel.close();
@@ -436,6 +542,13 @@ public class SDRTMediaBridge {
             sdrtChannel = null;
         }
         
+        // Clear remote streams
         remoteStreams.clear();
+        
+        // Log final statistics
+        logger.info("SDRTMediaBridge cleanup complete. Final stats:");
+        logger.info("  FEC Stats: " + fecDecoder.getStatistics());
+        logger.info("  Jitter Buffer Stats: " + jitterBuffer.getStatistics());
+        logger.info("  Bitrate Controller: " + bitrateController.getStatistics());
     }
 }

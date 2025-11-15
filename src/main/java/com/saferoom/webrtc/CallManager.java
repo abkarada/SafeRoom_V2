@@ -456,6 +456,22 @@ public class CallManager {
                 handleScreenShareStop(signal);
                 break;
                 
+            // SDRT (Serverless Distributed Relay Tree) signals
+            case TREE_PARENT_ASSIGN:
+                System.out.println("[CallManager] Processing TREE_PARENT_ASSIGN...");
+                handleTreeParentAssign(signal);
+                break;
+                
+            case TREE_PROMOTE:
+                System.out.println("[CallManager] Processing TREE_PROMOTE...");
+                handleTreePromote(signal);
+                break;
+                
+            case TREE_DEMOTE:
+                System.out.println("[CallManager] Processing TREE_DEMOTE...");
+                handleTreeDemote(signal);
+                break;
+                
             default:
                 System.err.printf("[CallManager] Unknown signal type: %s%n", type);
         }
@@ -485,13 +501,13 @@ public class CallManager {
         webrtcClient = new WebRTCClient(currentCallId, remoteUsername);
         webrtcClient.createPeerConnection(signal.getAudioEnabled(), signal.getVideoEnabled());
         
-        // 🎤 Add audio track if audio enabled
+        // Add audio track if audio enabled
         if (signal.getAudioEnabled()) {
             System.out.println("[CallManager] Adding audio track for incoming call...");
             webrtcClient.addAudioTrack();
         }
         
-        // 📹 Add video track if video enabled
+        // Add video track if video enabled
         if (signal.getVideoEnabled()) {
             System.out.println("[CallManager] Adding video track for incoming call...");
             webrtcClient.addVideoTrack();
@@ -781,6 +797,188 @@ public class CallManager {
     
     public void setOnRemoteScreenShareStoppedCallback(Runnable callback) {
         this.onRemoteScreenShareStoppedCallback = callback;
+    }
+    
+    // ===============================
+    // SDRT (Serverless Distributed Relay Tree) - Room-based Calls
+    // ===============================
+    
+    /**
+     * Join a room using SDRT architecture
+     * This is for multi-party video calls (NOT 1-to-1)
+     * 
+     * @param roomId Unique room identifier
+     * @return true if join request sent successfully
+     */
+    public boolean joinRoom(String roomId) {
+        if (!isInitialized) {
+            System.err.println("[CallManager] Cannot join room - not initialized");
+            return false;
+        }
+        
+        System.out.printf("[CallManager] 🏠 Joining SDRT room: %s (user: %s)%n", roomId, myUsername);
+        
+        // Join room via SDRTSessionManager
+        SDRTSessionManager.getInstance().joinRoom(
+            roomId,
+            myUsername,
+            signal -> {
+                // Send signal to server via existing signaling client
+                try {
+                    signalingClient.sendSignal(signal);
+                } catch (Exception e) {
+                    System.err.printf("[CallManager] Failed to send SDRT signal: %s%n", e.getMessage());
+                    e.printStackTrace();
+                }
+            }
+        );
+        
+        System.out.printf("[CallManager] ✅ Room join request sent for: %s%n", roomId);
+        return true;
+    }
+    
+    /**
+     * Leave a room
+     * 
+     * @param roomId Room to leave
+     */
+    public void leaveRoom(String roomId) {
+        System.out.printf("[CallManager] 🚪 Leaving SDRT room: %s%n", roomId);
+        
+        SDRTSessionManager.getInstance().leaveRoom(
+            roomId,
+            signal -> {
+                try {
+                    signalingClient.sendSignal(signal);
+                } catch (Exception e) {
+                    System.err.printf("[CallManager] Failed to send leave signal: %s%n", e.getMessage());
+                }
+            }
+        );
+    }
+    
+    /**
+     * Check if currently in a room
+     * 
+     * @param roomId Room ID to check
+     * @return true if in room
+     */
+    public boolean isInRoom(String roomId) {
+        return SDRTSessionManager.getInstance().isInRoom(roomId);
+    }
+    
+    /**
+     * Get current SDRT session for a room
+     * 
+     * @param roomId Room ID
+     * @return SDRT session or null
+     */
+    public SDRTSessionManager.SDRTSession getSDRTSession(String roomId) {
+        return SDRTSessionManager.getInstance().getSession(roomId);
+    }
+    
+    // ===============================
+    // SDRT (Serverless Distributed Relay Tree) Handlers
+    // ===============================
+    
+    /**
+     * Handle TREE_PARENT_ASSIGN signal from server
+     * This assigns us a parent in the SDRT tree for a room
+     */
+    private void handleTreeParentAssign(WebRTCSignal signal) {
+        String roomId = signal.getRoomId();
+        String parentUserId = signal.getParentUserId();
+        String nodeRole = signal.getNodeRole();
+        String groupKey = signal.getGroupKey();
+        
+        System.out.printf("[CallManager] SDRT: Parent assigned for room %s: parent=%s, role=%s%n",
+            roomId, parentUserId != null ? parentUserId : "ROOT", nodeRole);
+        
+        // Pass to SDRTSessionManager
+        SDRTSessionManager.getInstance().handleParentAssignment(
+            roomId,
+            parentUserId,
+            nodeRole,
+            groupKey
+        );
+        
+        // Create DataChannel to parent if parentUserId is not null
+        if (parentUserId != null && !parentUserId.isEmpty()) {
+            System.out.printf("[CallManager] Creating DataChannel to parent: %s%n", parentUserId);
+            createSDRTDataChannel(roomId, parentUserId, true); // true = to parent
+        } else {
+            System.out.println("[CallManager] We are ROOT - no parent DataChannel needed");
+        }
+    }
+    
+    /**
+     * Handle TREE_PROMOTE signal from server
+     * Promotes our role (LEAF → RELAY or RELAY → ROOT)
+     */
+    private void handleTreePromote(WebRTCSignal signal) {
+        String roomId = signal.getRoomId();
+        String newRole = signal.getNodeRole();
+        
+        System.out.printf("[CallManager] SDRT: Promoted in room %s to role: %s%n", roomId, newRole);
+        
+        // Update role in session
+        SDRTSessionManager.SDRTSession session = SDRTSessionManager.getInstance().getSession(roomId);
+        if (session != null) {
+            session.updateRole(com.saferoom.webrtc.relay.TreeNode.NodeRole.valueOf(newRole));
+        }
+    }
+    
+    /**
+     * Handle TREE_DEMOTE signal from server
+     * Demotes our role (ROOT → RELAY or RELAY → LEAF)
+     */
+    private void handleTreeDemote(WebRTCSignal signal) {
+        String roomId = signal.getRoomId();
+        String newRole = signal.getNodeRole();
+        
+        System.out.printf("[CallManager] SDRT: Demoted in room %s to role: %s%n", roomId, newRole);
+        
+        // Update role in session
+        SDRTSessionManager.SDRTSession session = SDRTSessionManager.getInstance().getSession(roomId);
+        if (session != null) {
+            session.updateRole(com.saferoom.webrtc.relay.TreeNode.NodeRole.valueOf(newRole));
+        }
+    }
+    
+    /**
+     * Create SDRT DataChannel for parent or child connection
+     * 
+     * @param roomId Room ID
+     * @param peerUserId Peer user ID (parent or child)
+     * @param isParent true if connecting to parent, false if accepting child
+     */
+    private void createSDRTDataChannel(String roomId, String peerUserId, boolean isParent) {
+        System.out.printf("[CallManager] Creating SDRT DataChannel: room=%s, peer=%s, isParent=%b%n",
+            roomId, peerUserId, isParent);
+        
+        // TODO: Get or create PeerConnection to peer
+        // For now, this is a placeholder
+        // In real implementation, we need:
+        // 1. Get/create RTCPeerConnection for peerUserId
+        // 2. Create DataChannel with label "sdrt-{roomId}"
+        // 3. Set ordered=true (SDRT requires ordered delivery)
+        // 4. Attach to TreeNode via setParentChannel() or addChildChannel()
+        // 5. Wire DataChannel.onMessage → SDRTMediaBridge.handleIncomingPacket()
+        
+        System.out.printf("[CallManager] ⚠️ TODO: Implement PeerConnection + DataChannel creation%n");
+        System.out.printf("[CallManager] This requires WebRTC PeerConnection to: %s%n", peerUserId);
+        
+        // Placeholder: Mark DataChannel as "pending creation"
+        SDRTSessionManager.SDRTSession session = SDRTSessionManager.getInstance().getSession(roomId);
+        if (session != null) {
+            if (isParent) {
+                System.out.printf("[CallManager] Will connect to parent via DataChannel: %s%n", peerUserId);
+                // session.treeNode.setParentChannel(dataChannel, peerUserId);
+            } else {
+                System.out.printf("[CallManager] Will accept child connection via DataChannel: %s%n", peerUserId);
+                // session.treeNode.addChild(childTreeNode); // needs TreeNode object, not userId
+            }
+        }
     }
     
     // ===============================

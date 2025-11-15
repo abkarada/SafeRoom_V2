@@ -27,7 +27,8 @@ public class MediaPacket {
         AUDIO((byte) 0x02),      // Audio RTP packet
         CONTROL((byte) 0x03),    // Control messages (ICE, metrics, etc.)
         HEARTBEAT((byte) 0x04),  // Keep-alive for connection monitoring
-        KEY_ROTATION((byte) 0x05); // Group key update notification
+        KEY_ROTATION((byte) 0x05), // Group key update notification
+        FEC((byte) 0x06);        // Forward Error Correction packet
         
         private final byte value;
         
@@ -54,6 +55,11 @@ public class MediaPacket {
     private final int sequenceNumber;    // Packet sequence for ordering
     private final byte[] payload;        // Encrypted RTP data
     
+    // FEC (Forward Error Correction) fields
+    private final boolean isFECPacket;   // Is this a FEC packet?
+    private final int fecGroupId;        // FEC group this packet belongs to (0 = no FEC)
+    private final byte[] fecData;        // XOR recovery data for FEC
+    
     // Room context (not serialized, set during processing)
     private transient String roomId;
     
@@ -62,6 +68,15 @@ public class MediaPacket {
      */
     public MediaPacket(PacketType type, String sourceId, long timestamp, 
                        int sequenceNumber, byte[] payload) {
+        this(type, sourceId, timestamp, sequenceNumber, payload, false, 0, null);
+    }
+    
+    /**
+     * Constructor with FEC support
+     */
+    public MediaPacket(PacketType type, String sourceId, long timestamp, 
+                       int sequenceNumber, byte[] payload,
+                       boolean isFECPacket, int fecGroupId, byte[] fecData) {
         if (sourceId == null || sourceId.isEmpty()) {
             throw new IllegalArgumentException("Source ID cannot be null or empty");
         }
@@ -74,6 +89,9 @@ public class MediaPacket {
         this.timestamp = timestamp;
         this.sequenceNumber = sequenceNumber;
         this.payload = payload;
+        this.isFECPacket = isFECPacket;
+        this.fecGroupId = fecGroupId;
+        this.fecData = fecData;
     }
     
     /**
@@ -195,6 +213,18 @@ public class MediaPacket {
     
     public void setRoomId(String roomId) {
         this.roomId = roomId;
+    }
+    
+    public boolean isFECPacket() {
+        return isFECPacket;
+    }
+    
+    public int getFecGroupId() {
+        return fecGroupId;
+    }
+    
+    public byte[] getFecData() {
+        return fecData;
     }
     
     /**

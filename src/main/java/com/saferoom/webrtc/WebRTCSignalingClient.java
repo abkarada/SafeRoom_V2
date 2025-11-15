@@ -561,6 +561,14 @@ public class WebRTCSignalingClient {
         }
     }
     
+    /**
+     * Send a generic signal (SDRT signals use this)
+     * Delegates to sendSignalViaStream
+     */
+    public boolean sendSignal(WebRTCSignal signal) {
+        return sendSignalViaStream(signal);
+    }
+    
     // ===============================
     // Callback Setter
     // ===============================
