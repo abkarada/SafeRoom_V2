@@ -27,6 +27,8 @@ import com.saferoom.grpc.SafeRoomProto.FriendRequest;
 import com.saferoom.grpc.SafeRoomProto.FriendResponse;
 import com.saferoom.webrtc.WebRTCSessionManager;
 import com.saferoom.webrtc.WebRTCSessionManager.CallSession;
+import com.saferoom.server.SDRTCoordinator;
+import com.saferoom.crypto.GroupKeyManager;
 import java.text.SimpleDateFormat;
 import java.sql.Timestamp;
 
@@ -34,6 +36,10 @@ import java.sql.Timestamp;
 import io.grpc.stub.StreamObserver;
 
 public class UDPHoleImpl extends UDPHoleGrpc.UDPHoleImplBase {
+	
+	// SDRT Components (Serverless Distributed Relay Tree)
+	private final SDRTCoordinator sdrtCoordinator = new SDRTCoordinator();
+	private final GroupKeyManager groupKeyManager = new GroupKeyManager(true); // Auto-rotation enabled
 	
 	@Override
 	public void menuAns(Menu request, StreamObserver<Status> response){
@@ -916,6 +922,21 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 					forwardSignal(request, responseObserver);
 					break;
 					
+				// ===============================
+				// SDRT (Serverless Distributed Relay Tree) Signals
+				// ===============================
+				case TREE_JOIN:
+					handleTreeJoin(request, responseObserver);
+					break;
+					
+				case TREE_METRICS:
+					handleTreeMetrics(request, responseObserver);
+					break;
+					
+				case TREE_REBALANCE:
+					handleTreeRebalance(request, responseObserver);
+					break;
+					
 				default:
 					responseObserver.onNext(SafeRoomProto.WebRTCResponse.newBuilder()
 						.setSuccess(false)
@@ -1157,6 +1178,127 @@ public void sendFriendRequest(FriendRequest request, StreamObserver<FriendRespon
 				.setMessage("Target user not available")
 				.build());
 		}
+		responseObserver.onCompleted();
+	}
+	
+	// ===============================
+	// SDRT (Serverless Distributed Relay Tree) Handlers
+	// ===============================
+	
+	/**
+	 * Handle TREE_JOIN: User wants to join the tree for a room
+	 */
+	private void handleTreeJoin(SafeRoomProto.WebRTCSignal request,
+			StreamObserver<SafeRoomProto.WebRTCResponse> responseObserver) {
+		
+		String userId = request.getFrom();
+		String roomId = request.getRoomId();
+		
+		System.out.printf("[SDRT] TREE_JOIN: user=%s, room=%s%n", userId, roomId);
+		
+		if (roomId == null || roomId.isEmpty()) {
+			responseObserver.onNext(SafeRoomProto.WebRTCResponse.newBuilder()
+				.setSuccess(false)
+				.setMessage("Room ID required")
+				.build());
+			responseObserver.onCompleted();
+			return;
+		}
+		
+		try {
+			// Assign parent
+			String parentId = sdrtCoordinator.handleTreeJoin(roomId, userId);
+			
+			// Get/generate group key
+			String groupKey;
+			if (!groupKeyManager.hasKeyForRoom(roomId)) {
+				groupKey = groupKeyManager.generateKeyForRoom(roomId);
+			} else {
+				groupKey = groupKeyManager.generateKeyForRoom(roomId); // Re-generate for now
+			}
+			
+			// Determine role
+			String nodeRole = parentId == null ? "ROOT" : "LEAF";
+			
+			// Send TREE_PARENT_ASSIGN
+			SafeRoomProto.WebRTCSignal.Builder signal = SafeRoomProto.WebRTCSignal.newBuilder()
+				.setType(SafeRoomProto.WebRTCSignal.SignalType.TREE_PARENT_ASSIGN)
+				.setFrom("server")
+				.setTo(userId)
+				.setRoomId(roomId)
+				.setNodeRole(nodeRole)
+				.setGroupKey(groupKey);
+			
+			if (parentId != null) {
+				signal.setParentUserId(parentId);
+			}
+			
+			if (WebRTCSessionManager.hasSignalingStream(userId)) {
+				WebRTCSessionManager.sendSignalToUser(userId, signal.build());
+			}
+			
+			responseObserver.onNext(SafeRoomProto.WebRTCResponse.newBuilder()
+				.setSuccess(true)
+				.setMessage("Parent assigned: " + (parentId != null ? parentId : "ROOT"))
+				.build());
+			responseObserver.onCompleted();
+			
+		} catch (Exception e) {
+			e.printStackTrace();
+			responseObserver.onNext(SafeRoomProto.WebRTCResponse.newBuilder()
+				.setSuccess(false)
+				.setMessage("Error: " + e.getMessage())
+				.build());
+			responseObserver.onCompleted();
+		}
+	}
+	
+	/**
+	 * Handle TREE_METRICS: Update node metrics
+	 */
+	private void handleTreeMetrics(SafeRoomProto.WebRTCSignal request,
+			StreamObserver<SafeRoomProto.WebRTCResponse> responseObserver) {
+		
+		String userId = request.getFrom();
+		String roomId = request.getRoomId();
+		String metricsJson = request.getMetricsData();
+		
+		if (metricsJson != null) {
+			try {
+				// Simple JSON parsing
+				double rtt = 100.0, bandwidth = 1.0, loss = 0.0, cpu = 0.5;
+				if (metricsJson.contains("rtt")) 
+					rtt = Double.parseDouble(metricsJson.split("\"rtt\":")[1].split(",")[0]);
+				if (metricsJson.contains("bandwidth")) 
+					bandwidth = Double.parseDouble(metricsJson.split("\"bandwidth\":")[1].split(",")[0]);
+				if (metricsJson.contains("loss")) 
+					loss = Double.parseDouble(metricsJson.split("\"loss\":")[1].split(",")[0]);
+				if (metricsJson.contains("cpu")) 
+					cpu = Double.parseDouble(metricsJson.split("\"cpu\":")[1].split("}")[0]);
+				
+				sdrtCoordinator.updateMetrics(roomId, userId, rtt, bandwidth, loss, cpu);
+			} catch (Exception e) {
+				System.err.println("[SDRT] Error parsing metrics: " + e.getMessage());
+			}
+		}
+		
+		responseObserver.onNext(SafeRoomProto.WebRTCResponse.newBuilder()
+			.setSuccess(true)
+			.setMessage("Metrics recorded")
+			.build());
+		responseObserver.onCompleted();
+	}
+	
+	/**
+	 * Handle TREE_REBALANCE: Parent change request
+	 */
+	private void handleTreeRebalance(SafeRoomProto.WebRTCSignal request,
+			StreamObserver<SafeRoomProto.WebRTCResponse> responseObserver) {
+		
+		responseObserver.onNext(SafeRoomProto.WebRTCResponse.newBuilder()
+			.setSuccess(true)
+			.setMessage("Rebalance acknowledged")
+			.build());
 		responseObserver.onCompleted();
 	}
 }
