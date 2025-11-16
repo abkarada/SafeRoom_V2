@@ -40,10 +40,16 @@ public class TreeBalancer {
     private static final double MIN_SCORE_IMPROVEMENT = 0.15;   // 15% improvement needed to switch
     private static final int MAX_CHILDREN_THRESHOLD = 5;        // Max children before redistribution
     private static final double CPU_OVERLOAD_THRESHOLD = 0.85;  // 85% CPU = overloaded
+    private static final long PARENT_SWITCH_GRACE_PERIOD_MS = 5000; // 5 second grace period during switch
     
     // Scheduler
     private final ScheduledExecutorService scheduler;
     private volatile boolean running = false;
+    
+    // Parent switch state tracking
+    private volatile boolean parentSwitchInProgress = false;
+    private volatile long parentSwitchStartTime = 0;
+    private volatile String targetParentId = null;
     
     // Callback for parent switch events
     private ParentSwitchCallback switchCallback;
@@ -217,26 +223,70 @@ public class TreeBalancer {
     /**
      * Switch to a new parent
      * 
-     * This needs to be coordinated with signaling server to:
-     * 1. Request new parent connection
-     * 2. Establish DataChannel to new parent
-     * 3. Disconnect from old parent
-     * 4. Update TreeNode state
+     * Grace period mechanism:
+     * 1. Mark switch in progress
+     * 2. Trigger signaling to establish new connection
+     * 3. During grace period, don't trigger another switch
+     * 4. If switch fails after grace period, can retry
+     * 
+     * This prevents:
+     * - Multiple simultaneous switches
+     * - Packet loss during transition
+     * - Race conditions between old and new parent
      */
     private void switchParent(String newParentId) {
+        // Check if already switching
+        if (parentSwitchInProgress) {
+            long elapsed = System.currentTimeMillis() - parentSwitchStartTime;
+            if (elapsed < PARENT_SWITCH_GRACE_PERIOD_MS) {
+                logger.fine(String.format("Parent switch already in progress (%.1fs remaining)",
+                    (PARENT_SWITCH_GRACE_PERIOD_MS - elapsed) / 1000.0));
+                return;
+            } else {
+                // Grace period expired, allow retry
+                logger.warning("Previous parent switch timed out, retrying");
+            }
+        }
+        
         TreeNode oldParent = localNode.getParent();
         String oldParentId = oldParent != null ? oldParent.getUserId() : "none";
         
         logger.info(String.format("Initiating parent switch: %s → %s", 
                                   oldParentId, newParentId));
         
+        // Mark switch in progress
+        parentSwitchInProgress = true;
+        parentSwitchStartTime = System.currentTimeMillis();
+        targetParentId = newParentId;
+        
         // Notify callback (this should trigger signaling)
         if (switchCallback != null) {
             switchCallback.onParentSwitch(oldParentId, newParentId);
         }
         
-        // Note: Actual parent switch happens when new WebRTC connection is established
-        // This is just the trigger/decision point
+        // Note: Call confirmParentSwitchComplete() when new connection is established
+    }
+    
+    /**
+     * Called by external code when parent switch is complete
+     * Clears the grace period flag
+     */
+    public void confirmParentSwitchComplete() {
+        if (parentSwitchInProgress) {
+            long elapsed = System.currentTimeMillis() - parentSwitchStartTime;
+            logger.info(String.format("Parent switch completed in %.1fs", elapsed / 1000.0));
+            
+            parentSwitchInProgress = false;
+            parentSwitchStartTime = 0;
+            targetParentId = null;
+        }
+    }
+    
+    /**
+     * Check if parent switch is currently in progress
+     */
+    public boolean isParentSwitchInProgress() {
+        return parentSwitchInProgress;
     }
     
     /**

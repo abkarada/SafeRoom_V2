@@ -1,8 +1,5 @@
 package com.saferoom.webrtc.relay;
 
-import dev.onvoid.webrtc.RTCPeerConnection;
-import dev.onvoid.webrtc.RTCStatsReport;
-
 import java.lang.management.ManagementFactory;
 import java.lang.management.OperatingSystemMXBean;
 import java.util.Map;

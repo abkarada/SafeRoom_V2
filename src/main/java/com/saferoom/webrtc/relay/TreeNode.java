@@ -100,26 +100,38 @@ public class TreeNode {
     /**
      * Set parent node and establish DataChannel connection
      * 
+     * DEADLOCK PREVENTION: Calls to other TreeNode's synchronized methods
+     * are done outside of this node's lock to avoid circular locking
+     * 
      * @param parent Parent TreeNode
      * @param channel DataChannel to parent
      */
-    public synchronized void setParent(TreeNode parent, RTCDataChannel channel) {
+    public void setParent(TreeNode parent, RTCDataChannel channel) {
         if (this.role == NodeRole.ROOT) {
             logger.warning("Cannot set parent for ROOT node");
             return;
         }
         
-        // Disconnect old parent if exists
-        if (this.parent != null) {
-            this.parent.removeChild(this);
-            if (this.parentChannel != null) {
-                closeDataChannel(this.parentChannel);
+        TreeNode oldParent = null;
+        RTCDataChannel oldChannel = null;
+        
+        // Critical section: Update local state only
+        synchronized (this) {
+            oldParent = this.parent;
+            oldChannel = this.parentChannel;
+            this.parent = parent;
+            this.parentChannel = channel;
+        }
+        
+        // Outside of lock: Disconnect old parent (avoid nested locks)
+        if (oldParent != null) {
+            oldParent.removeChild(this);
+            if (oldChannel != null) {
+                closeDataChannel(oldChannel);
             }
         }
         
-        this.parent = parent;
-        this.parentChannel = channel;
-        
+        // Outside of lock: Add to new parent (avoid nested locks)
         if (parent != null) {
             parent.addChild(this);
             logger.info(String.format("Parent set: %s → %s", userId, parent.getUserId()));
@@ -243,7 +255,6 @@ public class TreeNode {
         
         // Serialize packet once (reuse for all children)
         byte[] packetBytes = packet.toBytes();
-        ByteBuffer buffer = ByteBuffer.wrap(packetBytes);
         
         // Send to all children except the source
         for (TreeNode child : children) {
@@ -298,6 +309,11 @@ public class TreeNode {
     
     /**
      * Check if packet is duplicate based on sequence number
+     * 
+     * Uses sliding window approach:
+     * - Exact duplicate: diff == 0
+     * - Out of order (too old): diff < 0 (after wraparound)
+     * - Too far ahead (suspected wraparound or attack): diff > SEQUENCE_BUFFER_SIZE
      */
     private boolean isDuplicatePacket(MediaPacket packet) {
         String sourceId = packet.getSourceId();
@@ -309,14 +325,32 @@ public class TreeNode {
         
         int currentSeq = packet.getSequenceNumber();
         
-        // Allow for sequence number wraparound
+        // Calculate difference with wraparound handling
         int diff = currentSeq - lastSeq;
-        if (diff < 0) {
-            diff += 65536; // Assuming 16-bit sequence numbers
+        
+        // Handle wraparound for 16-bit sequence numbers
+        if (diff < -32768) {
+            diff += 65536; // Wrapped forward
+        } else if (diff > 32768) {
+            diff -= 65536; // Wrapped backward
         }
         
-        // Packet is duplicate if sequence is not newer
-        return diff == 0 || diff > SEQUENCE_BUFFER_SIZE;
+        // Accept packets within sliding window [lastSeq+1, lastSeq+SEQUENCE_BUFFER_SIZE]
+        if (diff <= 0) {
+            // Duplicate or too old
+            return true;
+        }
+        
+        if (diff > SEQUENCE_BUFFER_SIZE) {
+            // Too far ahead - likely attack or major network issue
+            logger.warning(String.format(
+                "Packet too far ahead: source=%s, lastSeq=%d, currentSeq=%d, diff=%d",
+                sourceId, lastSeq, currentSeq, diff));
+            return true;
+        }
+        
+        // Valid packet within window
+        return false;
     }
     
     /**

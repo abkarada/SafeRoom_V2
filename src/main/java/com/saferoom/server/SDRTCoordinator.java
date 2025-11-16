@@ -105,12 +105,27 @@ public class SDRTCoordinator {
     /**
      * User joins a room and requests to join the tree
      * 
+     * IMPORTANT: This is a single-server implementation!
+     * For multi-server deployments, you need:
+     * 1. Distributed state store (Redis, etcd, Consul)
+     * 2. Distributed locking (to prevent split-brain)
+     * 3. Consensus algorithm for ROOT election (Raft, Paxos)
+     * 
+     * Without these, multiple servers can create conflicting ROOT nodes!
+     * 
      * @param roomId Room ID to join
      * @param userId User ID of joiner
      * @return Assigned parent user ID (null if this user should be ROOT)
      */
     public synchronized String handleTreeJoin(String roomId, String userId) {
         logger.info(String.format("Tree join request: user=%s, room=%s", userId, roomId));
+        
+        // TODO: For production multi-server:
+        // 1. Acquire distributed lock for this roomId
+        // 2. Read tree state from shared store (Redis)
+        // 3. Make assignment decision
+        // 4. Write updated state to shared store
+        // 5. Release distributed lock
         
         // Get or create room tree
         RoomTree tree = roomTrees.computeIfAbsent(roomId, RoomTree::new);
@@ -125,6 +140,7 @@ public class SDRTCoordinator {
         // Determine parent assignment based on tree size
         if (tree.getNodeCount() == 1) {
             // First user → ROOT
+            // CAUTION: In multi-server, this can create split-brain!
             newNode.promoteRole(NodeRole.ROOT);
             tree.rootNodeIds.add(userId);
             logger.info(String.format("[Room %s] %s promoted to ROOT (first joiner)", roomId, userId));
