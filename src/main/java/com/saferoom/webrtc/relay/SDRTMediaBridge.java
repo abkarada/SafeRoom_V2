@@ -1,7 +1,5 @@
 package com.saferoom.webrtc.relay;
 
-import com.saferoom.crypto.GroupKeyManager;
-
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -11,10 +9,14 @@ import java.util.logging.Logger;
  * 
  * RESPONSIBILITIES:
  * 1. Receive RTP packets from MediaEngine
- * 2. Encrypt with group key
- * 3. Wrap in MediaPacket and send to TreeNode
- * 4. Receive MediaPackets from TreeNode
- * 5. Decrypt and forward to MediaEngine
+ * 2. Wrap in MediaPacket and send to TreeNode
+ * 3. Receive MediaPackets from TreeNode
+ * 4. Forward raw RTP to MediaEngine
+ * 
+ * NO ENCRYPTION HERE:
+ * - WebRTC DataChannel already provides DTLS encryption
+ * - Relay nodes (B in A→B→C) can forward packets WITHOUT decrypt/re-encrypt
+ * - This enables zero-copy forwarding (critical for latency)
  * 
  * WHAT IT DOES NOT DO (MediaEngine's job):
  * - FEC encoding/decoding
@@ -25,10 +27,14 @@ import java.util.logging.Logger;
  * 
  * ARCHITECTURE:
  * - MediaEngine: All media processing (capture, encode, decode, playback, FEC, jitter)
- * - SDRTMediaBridge: Encryption + MediaPacket wrapping
+ * - SDRTMediaBridge: Simple MediaPacket wrapping (NO ENCRYPTION)
  * - TreeNode: Tree topology + packet forwarding
- * - WebRTC DataChannel: NAT traversal + DTLS transport
+ * - WebRTC DataChannel: NAT traversal + DTLS transport security
+ * 
+ * @deprecated This class is being replaced by media_engine/adapter/SDRTTransport
+ *             New code should use the MediaEngine transport abstraction layer.
  */
+@Deprecated
 public class SDRTMediaBridge {
     
     private static final Logger logger = Logger.getLogger(SDRTMediaBridge.class.getName());
@@ -37,26 +43,39 @@ public class SDRTMediaBridge {
     private final String userId;
     private final String roomId;
     private final TreeNode treeNode;
-    private final GroupKeyManager keyManager;
     
     // Packet sequencing
     private final AtomicInteger outgoingSequence = new AtomicInteger(0);
     
-    // Callback for MediaEngine (to receive decrypted RTP packets)
+    // Callback for MediaEngine (to receive RTP packets)
     private java.util.function.BiConsumer<byte[], String> rtpPacketCallback;
     
     /**
-     * Constructor
+     * Constructor (GroupKeyManager removed - no encryption needed)
+     * 
+     * @deprecated Use media_engine/adapter/SDRTTransport instead
      */
-    public SDRTMediaBridge(String userId, String roomId, TreeNode treeNode, 
-                           GroupKeyManager keyManager) {
+    @Deprecated
+    public SDRTMediaBridge(String userId, String roomId, TreeNode treeNode) {
         this.userId = userId;
         this.roomId = roomId;
         this.treeNode = treeNode;
-        this.keyManager = keyManager;
         
-        logger.info(String.format("SDRTMediaBridge created: userId=%s, roomId=%s", 
+        logger.warning("⚠️ SDRTMediaBridge is deprecated! Use media_engine.adapter.SDRTTransport");
+        logger.info(String.format("SDRTMediaBridge created: userId=%s, roomId=%s (NO ENCRYPTION)", 
                                   userId, roomId));
+    }
+    
+    /**
+     * Backward compatibility constructor (accepts but ignores GroupKeyManager)
+     * 
+     * @deprecated GroupKeyManager is no longer used - WebRTC DTLS provides security
+     */
+    @Deprecated
+    public SDRTMediaBridge(String userId, String roomId, TreeNode treeNode, 
+                           Object ignoredKeyManager) {
+        this(userId, roomId, treeNode);
+        logger.warning("⚠️ GroupKeyManager passed but ignored - WebRTC DTLS handles encryption");
     }
     
     /**
@@ -73,21 +92,22 @@ public class SDRTMediaBridge {
      * Process outgoing RTP packet from MediaEngine
      * 
      * Called by MediaEngine when RTP packet is ready to send
+     * NO ENCRYPTION - WebRTC DTLS already secures the channel
      * 
      * @param rtpPacket Raw RTP packet bytes from GStreamer
      */
     public void sendRtpPacket(byte[] rtpPacket) {
         try {
-            // Encrypt packet
-            byte[] encryptedPayload = keyManager.encrypt(roomId, rtpPacket);
+            // NO ENCRYPTION - just wrap in MediaPacket
+            // WebRTC DataChannel DTLS provides transport security
             
-            // Create MediaPacket
+            // Create MediaPacket with raw RTP payload
             MediaPacket packet = new MediaPacket(
                 MediaPacket.PacketType.VIDEO,
                 userId,
                 System.currentTimeMillis() * 1000, // Microseconds
                 outgoingSequence.incrementAndGet(),
-                encryptedPayload
+                rtpPacket  // Raw RTP packet, no encryption
             );
             packet.setRoomId(roomId);
             
@@ -124,6 +144,8 @@ public class SDRTMediaBridge {
      * Process incoming MediaPacket from tree
      * 
      * Called by TreeNode when packet arrives
+     * NO DECRYPTION - packet is already in plaintext RTP format
+     * (WebRTC DTLS decrypts at DataChannel level)
      * 
      * @param packet Received MediaPacket
      */
@@ -135,13 +157,14 @@ public class SDRTMediaBridge {
                 return;
             }
             
-            // Ignore own packets
+            // Ignore own packets (loopback prevention)
             if (packet.getSourceId().equals(userId)) {
                 return;
             }
             
-            // Decrypt payload
-            byte[] rtpPacket = keyManager.decrypt(roomId, packet.getPayload());
+            // NO DECRYPTION - payload is already raw RTP
+            // WebRTC DataChannel DTLS handles decryption at transport layer
+            byte[] rtpPacket = packet.getPayload();
             
             // Forward to MediaEngine
             if (rtpPacketCallback != null) {

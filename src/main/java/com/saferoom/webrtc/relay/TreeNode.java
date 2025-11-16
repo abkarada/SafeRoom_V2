@@ -61,6 +61,9 @@ public class TreeNode {
     private final Map<String, Integer> lastSequenceNumbers;     // Per-source sequence tracking
     private final Map<String, Long> lastPacketTime;             // For timeout detection
     
+    // MediaEngine callback (for receiving packets)
+    private volatile java.util.function.Consumer<MediaPacket> packetCallback;
+    
     // Configuration
     private static final int MAX_CHILDREN = 5;                  // Maximum children per RELAY
     private static final int PACKET_TIMEOUT_MS = 5000;          // Packet timeout threshold
@@ -220,6 +223,16 @@ public class TreeNode {
         
         // Update sequence tracking
         lastSequenceNumbers.put(sourceId, packet.getSequenceNumber());
+        
+        // Invoke callback if set (for MediaEngine integration)
+        java.util.function.Consumer<MediaPacket> callback = packetCallback;
+        if (callback != null) {
+            try {
+                callback.accept(packet);
+            } catch (Exception e) {
+                logger.log(Level.WARNING, "Packet callback threw exception", e);
+            }
+        }
         
         // Role-specific processing
         switch (role) {
@@ -489,6 +502,25 @@ public class TreeNode {
     
     public void setForwardingEnabled(boolean enabled) {
         this.forwardingEnabled = enabled;
+    }
+    
+    /**
+     * Set callback to receive packets from the tree
+     * This is called by SDRTTransport to register for packet delivery
+     * 
+     * @param callback Consumer that receives MediaPacket when packets arrive
+     */
+    public void setPacketCallback(java.util.function.Consumer<MediaPacket> callback) {
+        this.packetCallback = callback;
+    }
+    
+    /**
+     * Get the current packet callback
+     * 
+     * @return Current packet callback or null if not set
+     */
+    public java.util.function.Consumer<MediaPacket> getPacketCallback() {
+        return packetCallback;
     }
     
     @Override
