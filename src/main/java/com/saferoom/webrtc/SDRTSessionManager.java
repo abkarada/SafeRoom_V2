@@ -1,11 +1,12 @@
 package com.saferoom.webrtc;
 
 import com.saferoom.grpc.SafeRoomProto;
-import com.saferoom.webrtc.relay.TreeNode;
+import com.saferoom.media_engine.core.MediaSessionConfig;
 import com.saferoom.webrtc.relay.SDRTMediaBridge;
+import com.saferoom.webrtc.relay.SDRTMediaBridge.MediaComponents;
+import com.saferoom.webrtc.relay.TreeNode;
 import com.saferoom.crypto.GroupKeyManager;
 import com.saferoom.webrtc.relay.ConnectionMetrics;
-import com.saferoom.webrtc.relay.FailoverManager;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
@@ -41,6 +42,8 @@ public class SDRTSessionManager {
 		public SDRTMediaBridge mediaBridge;
 		public ConnectionMetrics connectionMetrics;
 		public String parentUserId;
+		public MediaSessionConfig mediaConfig;
+		public MediaComponents mediaComponents;
 		
 		public SDRTSession(String roomId, String localUserId, String groupKey, GroupKeyManager keyManager) {
 			this.roomId = roomId;
@@ -49,8 +52,9 @@ public class SDRTSessionManager {
 			// Initialize TreeNode (starts as LEAF until server assigns role)
 			this.treeNode = new TreeNode(localUserId, roomId, TreeNode.NodeRole.LEAF);
 			
-			// Initialize MediaBridge
-			this.mediaBridge = new SDRTMediaBridge(localUserId, roomId, treeNode, keyManager);
+			this.mediaConfig = MediaSessionConfig.builder().build();
+			this.mediaComponents = MediaComponents.builder().build();
+			this.mediaBridge = new SDRTMediaBridge(localUserId, roomId, treeNode, mediaConfig, mediaComponents);
 			
 			// Initialize metrics
 			this.connectionMetrics = new ConnectionMetrics();
@@ -65,8 +69,33 @@ public class SDRTSessionManager {
 			// Parent connection will be established via WebRTC DataChannel
 		}
 		
+		public synchronized void configureMediaEngine(MediaSessionConfig config, MediaComponents components) {
+			this.mediaConfig = config != null ? config : MediaSessionConfig.builder().build();
+			this.mediaComponents = components != null ? components : MediaComponents.builder().build();
+			
+			if (mediaBridge != null) {
+				mediaBridge.stop();
+			}
+			this.mediaBridge = new SDRTMediaBridge(localUserId, roomId, treeNode, this.mediaConfig, this.mediaComponents);
+		}
+		
+		public void ensureMediaEngineStarted() {
+			if (mediaBridge == null) {
+				return;
+			}
+			try {
+				mediaBridge.start();
+			} catch (Exception e) {
+				System.err.printf("[SDRT] Failed to start media session for room %s: %s%n",
+						roomId, e.getMessage());
+				e.printStackTrace();
+			}
+		}
+		
 		public void cleanup() {
-			// Cleanup handled by TreeNode
+			if (mediaBridge != null) {
+				mediaBridge.stop();
+			}
 		}
 	}
 	
@@ -128,7 +157,7 @@ public class SDRTSessionManager {
 	public void handleParentAssignment(String roomId, String parentUserId, String nodeRole, String groupKey) {
 		SDRTSession session = activeSessions.get(roomId);
 		if (session == null) {
-			System.err.printf("[SDRT] No session for room %s%n", roomId);
+ 			System.err.printf("[SDRT] No session for room %s%n", roomId);
 			return;
 		}
 		
@@ -146,7 +175,8 @@ public class SDRTSessionManager {
 		
 		// Update group key
 		groupKeyManager.importKeyForRoom(roomId, groupKey);
-		session.mediaBridge = new SDRTMediaBridge(session.localUserId, roomId, session.treeNode, groupKeyManager);
+		
+		session.ensureMediaEngineStarted();
 	}
 	
 	/**
