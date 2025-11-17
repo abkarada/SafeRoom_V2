@@ -1,21 +1,30 @@
 package com.saferoom.gui.controller;
 
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+
+import org.kordamp.ikonli.javafx.FontIcon;
+
 import com.jfoenix.controls.JFXButton;
 import com.saferoom.gui.MainApp;
-import com.saferoom.gui.utils.UserSession;
-import com.saferoom.webrtc.CallManager;
-import com.saferoom.gui.dialog.IncomingCallDialog;
 import com.saferoom.gui.dialog.ActiveCallDialog;
+import com.saferoom.gui.dialog.IncomingCallDialog;
+import com.saferoom.gui.utils.AlertUtils;
+import com.saferoom.gui.utils.MacOSFullscreenHandler;
+import com.saferoom.gui.utils.UserSession;
+import com.saferoom.gui.utils.WindowStateManager;
+import com.saferoom.webrtc.CallManager;
+
 import javafx.application.Platform;
 import javafx.fxml.FXML;
 import javafx.fxml.FXMLLoader;
 import javafx.geometry.Pos;
 import javafx.geometry.Side;
 import javafx.scene.Parent;
-import com.saferoom.gui.utils.AlertUtils;
-import com.saferoom.gui.utils.WindowStateManager;
 import javafx.scene.control.ContextMenu;
-import java.util.concurrent.CompletableFuture;
 import javafx.scene.control.CustomMenuItem;
 import javafx.scene.control.Label;
 import javafx.scene.control.MenuItem;
@@ -27,36 +36,45 @@ import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
-import org.kordamp.ikonli.javafx.FontIcon;
-
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
 
 public class MainController {
 
     private static MainController instance;
 
     // FXML Değişkenleri
-    @FXML private BorderPane mainPane;
-    @FXML public StackPane contentArea;
-    @FXML private VBox navBox;
-    @FXML private JFXButton dashboardButton;
-    @FXML private JFXButton roomsButton;
-    @FXML private JFXButton messagesButton;
-    @FXML private JFXButton friendsButton;
-    @FXML private JFXButton fileVaultButton;
+    @FXML
+    private BorderPane mainPane;
+    @FXML
+    public StackPane contentArea;
+    @FXML
+    private VBox navBox;
+    @FXML
+    private JFXButton dashboardButton;
+    @FXML
+    private JFXButton roomsButton;
+    @FXML
+    private JFXButton messagesButton;
+    @FXML
+    private JFXButton friendsButton;
+    @FXML
+    private JFXButton fileVaultButton;
     // @FXML private JFXButton settingsButton; <-- KALDIRILDI
-    @FXML private JFXButton notificationsButton;
-    @FXML private StackPane profileBox;
-    @FXML private Label userAvatar;
-    @FXML private Region statusDot;
-    
+    @FXML
+    private JFXButton notificationsButton;
+    @FXML
+    private StackPane profileBox;
+    @FXML
+    private Label userAvatar;
+    @FXML
+    private Region statusDot;
+
     // Window control buttons
-    @FXML private JFXButton minimizeButton;
-    @FXML private JFXButton maximizeButton;
-    @FXML private JFXButton closeButton;
+    @FXML
+    private JFXButton minimizeButton;
+    @FXML
+    private JFXButton maximizeButton;
+    @FXML
+    private JFXButton closeButton;
 
     // Active call dialog reference (for incoming calls handled by MainController)
     private ActiveCallDialog currentActiveCallDialog;
@@ -67,40 +85,40 @@ public class MainController {
         IDLE("status-dot-idle"),
         DND("status-dot-dnd"),
         OFFLINE("status-dot-offline");
-        
+
         private final String styleClass;
-        
+
         UserStatus(String styleClass) {
             this.styleClass = styleClass;
         }
-        
+
         public String getStyleClass() {
             return styleClass;
         }
     }
-    
+
     private UserStatus currentStatus = UserStatus.ONLINE;
     private ContextMenu userMenu;
     private List<MenuItem> mainMenuItems = new ArrayList<>();
     private List<MenuItem> statusMenuItems = new ArrayList<>();
     private boolean showingStatusSheet = false;
-    
+
     // User Info
     private String getCurrentUserName() {
         return UserSession.getInstance().getDisplayName();
     }
-    
+
     private String getCurrentUserInitials() {
         return UserSession.getInstance().getUserInitials();
     }
-    
+
     // Window state manager instance
     private WindowStateManager windowStateManager = new WindowStateManager();
 
     @FXML
     public void initialize() {
         instance = this;
-        
+
         // Buton olay atamaları
         dashboardButton.setOnAction(event -> handleDashboard());
         roomsButton.setOnAction(event -> handleRooms());
@@ -116,7 +134,7 @@ public class MainController {
 
         // Window drag functionality for undecorated window
         windowStateManager.setupWindowDrag(mainPane);
-        
+
         // Pencere konumunu geri yükle (varsa)
         mainPane.sceneProperty().addListener((obs, oldScene, newScene) -> {
             if (newScene != null && newScene.getWindow() instanceof Stage) {
@@ -132,12 +150,12 @@ public class MainController {
 
         // Initialize user status
         setUserStatus(UserStatus.ONLINE);
-        
+
         // Initialize user avatar with first letter of username
         if (userAvatar != null) {
             userAvatar.setText("U"); // You can replace this with actual username first letter
         }
-        
+
         // 🔧 Initialize WebRTC CallManager on startup
         String currentUsername = UserSession.getInstance().getDisplayName();
         if (currentUsername != null && !currentUsername.equals("Username")) {
@@ -145,17 +163,17 @@ public class MainController {
             try {
                 CallManager callManager = CallManager.getInstance();
                 callManager.initialize(currentUsername);
-                
+
                 // 🔧 Setup global incoming call handler
                 setupGlobalCallCallbacks(callManager);
-                
+
                 System.out.println("[MainController] ✅ CallManager initialized - ready to receive calls");
             } catch (Exception e) {
                 System.err.printf("[MainController] ❌ Failed to initialize CallManager: %s%n", e.getMessage());
                 e.printStackTrace();
             }
         }
-        
+
         // 🎯 P2P Registration: Register self to signaling server
         if (currentUsername != null && !currentUsername.equals("Username")) {
             // com.saferoom.p2p.P2PConnectionManager.getInstance().registerSelf(currentUsername); // P2P system removed
@@ -178,7 +196,7 @@ public class MainController {
 
         // Başlangıçta Dashboard'u yükle
         handleDashboard();
-        
+
         // Ana scene'i transparent yap
         javafx.application.Platform.runLater(() -> {
             if (mainPane.getScene() != null) {
@@ -191,17 +209,19 @@ public class MainController {
         if (statusDot != null) {
             // Remove all status classes
             statusDot.getStyleClass().removeAll(
-                UserStatus.ONLINE.getStyleClass(),
-                UserStatus.IDLE.getStyleClass(),
-                UserStatus.DND.getStyleClass(),
-                UserStatus.OFFLINE.getStyleClass()
+                    UserStatus.ONLINE.getStyleClass(),
+                    UserStatus.IDLE.getStyleClass(),
+                    UserStatus.DND.getStyleClass(),
+                    UserStatus.OFFLINE.getStyleClass()
             );
             // Add the new status class
             statusDot.getStyleClass().add(status.getStyleClass());
             currentStatus = status;
             // Refresh user menu selection visuals if open
             boolean reopenUser = userMenu != null && userMenu.isShowing();
-            if (userMenu != null) userMenu.hide();
+            if (userMenu != null) {
+                userMenu.hide();
+            }
             buildUserContextMenu();
             if (reopenUser && profileBox != null) {
                 showUserMenuWithDynamicPosition();
@@ -210,44 +230,50 @@ public class MainController {
             }
         }
     }
-    
+
     public UserStatus getUserStatus() {
         return currentStatus;
     }
 
     private void showUserMenuWithDynamicPosition() {
-        if (userMenu == null || profileBox == null) return;
-        
+        if (userMenu == null || profileBox == null) {
+            return;
+        }
+
         // Get the scene and window bounds
         javafx.scene.Scene scene = profileBox.getScene();
-        if (scene == null) return;
-        
+        if (scene == null) {
+            return;
+        }
+
         javafx.stage.Window window = scene.getWindow();
-        if (window == null) return;
-        
+        if (window == null) {
+            return;
+        }
+
         // Get the profile box bounds in scene coordinates
         javafx.geometry.Bounds profileBounds = profileBox.localToScene(profileBox.getBoundsInLocal());
-        
+
         // Calculate the estimated menu height based on current menu items
         int currentMenuItemCount = userMenu.getItems().size();
         if (currentMenuItemCount == 0) {
             // If menu hasn't been populated yet, estimate based on main menu
             currentMenuItemCount = 7; // header + separator + status + separator + settings + help + separator + logout
         }
-        
+
         double estimatedMenuHeight = currentMenuItemCount * 32 + 20; // ~32px per item + padding
-        
+
         // Calculate position
         double offsetX = 8; // Small gap from profile
         double windowHeight = scene.getHeight();
         double profileBottomY = profileBounds.getMaxY();
         double profileTopY = profileBounds.getMinY();
-        
+
         // Calculate optimal position
         double offsetY;
         double spaceBelow = windowHeight - profileBottomY;
         double spaceAbove = profileTopY;
-        
+
         if (estimatedMenuHeight <= spaceBelow - 10) {
             // Enough space below the profile - position menu below
             offsetY = profileBounds.getHeight() + 5;
@@ -259,17 +285,17 @@ public class MainController {
             // Try to center the menu vertically around the profile, but keep it in bounds
             double idealCenterY = profileBounds.getMinY() + (profileBounds.getHeight() / 2);
             double menuTop = idealCenterY - (estimatedMenuHeight / 2);
-            
+
             // Adjust if menu would go outside window bounds
             if (menuTop < 10) {
                 menuTop = 10; // Keep 10px margin from top
             } else if (menuTop + estimatedMenuHeight > windowHeight - 10) {
                 menuTop = windowHeight - estimatedMenuHeight - 10; // Keep 10px margin from bottom
             }
-            
+
             offsetY = menuTop - profileBounds.getMinY();
         }
-        
+
         userMenu.show(profileBox, Side.RIGHT, offsetX, offsetY);
     }
 
@@ -378,45 +404,45 @@ public class MainController {
         return new CustomMenuItem(row, false);
     }
 
-    public void handleSettings() { 
-        clearActiveButton(); 
-        loadView("SettingsView.fxml"); 
+    public void handleSettings() {
+        clearActiveButton();
+        loadView("SettingsView.fxml");
     }
 
     public void handleLogout() {
         try {
             // Get current username before clearing session
             String currentUsername = UserSession.getInstance().getDisplayName();
-            
+
             // Stop heartbeat service and end session
             com.saferoom.gui.utils.HeartbeatService.getInstance().stopHeartbeat(currentUsername);
-            
+
             // Clear user session
             UserSession.getInstance().clearSession();
-            
+
             // Close current main window
             Stage currentStage = (Stage) mainPane.getScene().getWindow();
             currentStage.close();
-            
+
             // Open login window
             Stage loginStage = new Stage();
             loginStage.initStyle(javafx.stage.StageStyle.TRANSPARENT);
             loginStage.setTitle("SafeRoom - Login");
-            
+
             javafx.fxml.FXMLLoader loader = new javafx.fxml.FXMLLoader();
             loader.setLocation(getClass().getResource("/view/LoginView.fxml"));
             javafx.scene.Parent root = loader.load();
-            
+
             javafx.scene.Scene scene = new javafx.scene.Scene(root);
             scene.setFill(javafx.scene.paint.Color.TRANSPARENT); // Transparency ekle
-            
+
             // Add CSS styling
             String cssPath = "/styles/styles.css";
             java.net.URL cssUrl = getClass().getResource(cssPath);
             if (cssUrl != null) {
                 scene.getStylesheets().add(cssUrl.toExternalForm());
             }
-            
+
             // Enable window dragging
             final double[] xOffset = {0};
             final double[] yOffset = {0};
@@ -428,11 +454,11 @@ public class MainController {
                 loginStage.setX(event.getScreenX() - xOffset[0]);
                 loginStage.setY(event.getScreenY() - yOffset[0]);
             });
-            
+
             loginStage.setResizable(false);
             loginStage.setScene(scene);
             loginStage.show();
-            
+
         } catch (java.io.IOException e) {
             e.printStackTrace();
             AlertUtils.showError("Error", "Failed to logout. Please try again.");
@@ -447,7 +473,7 @@ public class MainController {
         showSidebarFromFullScreen();
         handleDashboard(); // Dashboard'a geri dön
     }
-    
+
     /**
      * Sidebar'ı gizleyerek full screen mod aktif eder
      */
@@ -457,12 +483,12 @@ public class MainController {
             mainPane.getLeft().setVisible(false);
             mainPane.getLeft().setManaged(false);
         }
-        
+
         // Content area'yı sol kenardan başlat (sidebar'ın bulunduğu alan dahil)
         if (contentArea != null) {
             // BorderPane'daki content area'nın sol margin'ını 0 yap
             javafx.scene.layout.BorderPane.setMargin(contentArea, new javafx.geometry.Insets(0));
-            
+
             // Content area'ı parent BorderPane'in center kısmına tam yerleştir
             if (contentArea.getParent() instanceof BorderPane) {
                 BorderPane parentPane = (BorderPane) contentArea.getParent().getParent();
@@ -472,7 +498,7 @@ public class MainController {
             }
         }
     }
-    
+
     /**
      * Sidebar'ı tekrar göstererek normal moda döner
      */
@@ -482,12 +508,12 @@ public class MainController {
             mainPane.getLeft().setVisible(true);
             mainPane.getLeft().setManaged(true);
         }
-        
+
         // Content area'yı normal konumuna döndür
         if (contentArea != null) {
             // Normal margin değerlerini geri yükle
             javafx.scene.layout.BorderPane.setMargin(contentArea, new javafx.geometry.Insets(0));
-            
+
             if (contentArea.getParent() instanceof BorderPane) {
                 BorderPane parentPane = (BorderPane) contentArea.getParent().getParent();
                 if (parentPane != null) {
@@ -505,58 +531,39 @@ public class MainController {
 
     private void handleMaximize() {
         Stage stage = (Stage) mainPane.getScene().getWindow();
-        
-        // Cross-platform maximize handling
-        String osName = System.getProperty("os.name").toLowerCase();
-        boolean isMacOS = osName.contains("mac");
-        
-        try {
-            if (isMacOS) {
-                // On macOS, try both fullscreen and maximize for better compatibility
-                if (stage.isFullScreen() || stage.isMaximized()) {
-                    stage.setFullScreen(false);
-                    stage.setMaximized(false);
-                    // Change icon to maximize
-                    if (maximizeButton != null && maximizeButton.getGraphic() instanceof FontIcon) {
-                        ((FontIcon) maximizeButton.getGraphic()).setIconLiteral("far-square");
-                    }
-                } else {
-                    // Try maximize first, fallback to fullscreen if needed
-                    stage.setMaximized(true);
-                    
-                    // If maximize didn't work (common on macOS), try fullscreen
-                    if (!stage.isMaximized()) {
-                        stage.setFullScreen(true);
-                    }
-                    
-                    // Change icon to restore down
-                    if (maximizeButton != null && maximizeButton.getGraphic() instanceof FontIcon) {
-                        ((FontIcon) maximizeButton.getGraphic()).setIconLiteral("far-clone");
-                    }
+
+        // Agent Yöntemi: Platform kontrolü yap
+        if (MacOSFullscreenHandler.isMacOS()) {
+            // macOS ise özel Handler'ı kullan
+            if (stage.isFullScreen()) {
+                // Çıkış yap
+                MacOSFullscreenHandler.handleMacOSFullscreen(stage, false);
+
+                // İkonu "Büyüt" yap
+                if (maximizeButton != null && maximizeButton.getGraphic() instanceof FontIcon) {
+                    ((FontIcon) maximizeButton.getGraphic()).setIconLiteral("far-square");
                 }
             } else {
-                // On Windows/Linux, use standard maximize
-                if (stage.isMaximized()) {
-                    stage.setMaximized(false);
-                    // Change icon to maximize
-                    if (maximizeButton != null && maximizeButton.getGraphic() instanceof FontIcon) {
-                        ((FontIcon) maximizeButton.getGraphic()).setIconLiteral("far-square");
-                    }
-                } else {
-                    stage.setMaximized(true);
-                    // Change icon to restore down
-                    if (maximizeButton != null && maximizeButton.getGraphic() instanceof FontIcon) {
-                        ((FontIcon) maximizeButton.getGraphic()).setIconLiteral("far-clone");
-                    }
+                // Giriş yap
+                MacOSFullscreenHandler.handleMacOSFullscreen(stage, true);
+
+                // İkonu "Küçült" yap
+                if (maximizeButton != null && maximizeButton.getGraphic() instanceof FontIcon) {
+                    ((FontIcon) maximizeButton.getGraphic()).setIconLiteral("far-clone");
                 }
             }
-        } catch (Exception e) {
-            System.err.println("Error handling maximize on " + osName + ": " + e.getMessage());
-            // Fallback: try basic maximize
-            try {
-                stage.setMaximized(!stage.isMaximized());
-            } catch (Exception fallbackError) {
-                System.err.println("Fallback maximize also failed: " + fallbackError.getMessage());
+        } else {
+            // Windows/Linux ise standart yöntemi kullan
+            if (stage.isMaximized()) {
+                stage.setMaximized(false);
+                if (maximizeButton != null && maximizeButton.getGraphic() instanceof FontIcon) {
+                    ((FontIcon) maximizeButton.getGraphic()).setIconLiteral("far-square");
+                }
+            } else {
+                stage.setMaximized(true);
+                if (maximizeButton != null && maximizeButton.getGraphic() instanceof FontIcon) {
+                    ((FontIcon) maximizeButton.getGraphic()).setIconLiteral("far-clone");
+                }
             }
         }
     }
@@ -570,12 +577,31 @@ public class MainController {
         return instance;
     }
 
-    private void handleDashboard() { setActiveButton(dashboardButton); loadView("DashBoardView.fxml"); }
-    public void handleRooms() { setActiveButton(roomsButton); loadView("RoomsView.fxml"); }
-    public void handleMessages() { setActiveButton(messagesButton); loadView("MessagesView.fxml"); }
-    public void handleFriends() { setActiveButton(friendsButton); loadView("FriendsView.fxml"); }
-    public void handleFileVault() { setActiveButton(fileVaultButton); loadView("FileVaultView.fxml"); }
-    
+    private void handleDashboard() {
+        setActiveButton(dashboardButton);
+        loadView("DashBoardView.fxml");
+    }
+
+    public void handleRooms() {
+        setActiveButton(roomsButton);
+        loadView("RoomsView.fxml");
+    }
+
+    public void handleMessages() {
+        setActiveButton(messagesButton);
+        loadView("MessagesView.fxml");
+    }
+
+    public void handleFriends() {
+        setActiveButton(friendsButton);
+        loadView("FriendsView.fxml");
+    }
+
+    public void handleFileVault() {
+        setActiveButton(fileVaultButton);
+        loadView("FileVaultView.fxml");
+    }
+
     /**
      * Programmatically switch to Messages tab (for P2P notifications)
      */
@@ -583,16 +609,16 @@ public class MainController {
         System.out.println("[GUI] 📱 Programmatically switching to Messages tab");
         handleMessages();
     }
-    
+
     public void handleProfile(String username) {
         try {
             FXMLLoader loader = new FXMLLoader(Objects.requireNonNull(MainApp.class.getResource("/view/ProfileView.fxml")));
             Parent root = loader.load();
-            
+
             // Get the controller and set profile data
             ProfileController profileController = loader.getController();
             profileController.setProfileData(username);
-            
+
             contentArea.getChildren().setAll(root);
             clearActiveButton(); // No specific button for profile view
         } catch (IOException | NullPointerException e) {
@@ -617,12 +643,12 @@ public class MainController {
         try {
             FXMLLoader loader = new FXMLLoader(MainApp.class.getResource("/view/ServerView.fxml"));
             Parent root = loader.load();
-            
+
             // Get the controller and set server info
             ServerController controller = loader.getController();
             controller.enterServer(serverName, serverIcon);
             controller.setMainController(this); // Pass reference to maintain window controls
-            
+
             contentArea.getChildren().setAll(root);
         } catch (IOException e) {
             e.printStackTrace();
@@ -643,13 +669,13 @@ public class MainController {
                 JoinMeetController controller = loader.getController();
                 controller.setMainController(this); // Ana controller referansını ver
             }
-            
+
             // Sidebar'ı gizle ve content area'yı tam genişliğe çıkar
             hideSidebarForFullScreen();
-            
+
             // Content area'ya yeni görünümü yükle
             contentArea.getChildren().setAll(root);
-            
+
         } catch (IOException e) {
             e.printStackTrace();
             showErrorInContentArea(fxmlFile + " yüklenemedi.");
@@ -684,95 +710,95 @@ public class MainController {
     private void clearActiveButton() {
         navBox.getChildren().forEach(node -> node.getStyleClass().remove("active"));
     }
-    
-        /**
+
+    /**
      * Refresh user information in all views after login
      */
     public void refreshUserInfo() {
         // Update user menu header with new user info
         buildUserContextMenu();
-        
+
         // If currently showing dashboard or settings, refresh those views
         if (contentArea.getChildren().size() > 0) {
             try {
                 Parent currentView = (Parent) contentArea.getChildren().get(0);
-                
+
                 // Check if it's dashboard view and refresh
                 if (currentView.getId() != null && currentView.getId().equals("dashboardView")) {
                     handleDashboard(); // Reload dashboard
                 }
-                
+
                 // Check if it's settings view and refresh  
                 if (currentView.getId() != null && currentView.getId().equals("settingsView")) {
                     handleSettings(); // Reload settings
                 }
-                
+
             } catch (Exception e) {
                 System.err.println("Error refreshing user info: " + e.getMessage());
             }
         }
     }
-    
+
     /**
-     * 🎯 Setup global WebRTC incoming call callbacks
-     * This must be called once during initialization to handle incoming calls globally
+     * 🎯 Setup global WebRTC incoming call callbacks This must be called once
+     * during initialization to handle incoming calls globally
      */
     private void setupGlobalCallCallbacks(CallManager callManager) {
         System.out.println("[MainController] 📞 Setting up global incoming call handler");
-        
+
         callManager.setOnIncomingCallCallback(callInfo -> {
             Platform.runLater(() -> {
-                System.out.printf("[MainController] 🔔 Incoming %s call from: %s (callId: %s)%n", 
-                    callInfo.videoEnabled ? "video" : "audio", 
-                    callInfo.callerUsername,
-                    callInfo.callId);
-                
+                System.out.printf("[MainController] 🔔 Incoming %s call from: %s (callId: %s)%n",
+                        callInfo.videoEnabled ? "video" : "audio",
+                        callInfo.callerUsername,
+                        callInfo.callId);
+
                 System.out.println("[MainController] 🎬 About to create IncomingCallDialog...");
-                
+
                 try {
                     // Show incoming call dialog
                     IncomingCallDialog dialog = new IncomingCallDialog(
-                        callInfo.callerUsername, 
-                        callInfo.callId,
-                        callInfo.videoEnabled
+                            callInfo.callerUsername,
+                            callInfo.callId,
+                            callInfo.videoEnabled
                     );
-                    
+
                     System.out.println("[MainController] 📺 Dialog created, calling show()...");
-                    
+
                     // Handle user response
                     CompletableFuture<Boolean> dialogResult = dialog.show();
-                    
+
                     System.out.printf("[MainController] 📺 Dialog shown, future isDone=%b%n", dialogResult.isDone());
-                    
+
                     dialogResult.thenAccept(accepted -> {
                         System.out.printf("[MainController] 🎯 Dialog response received: %b%n", accepted);
                         if (accepted) {
-                            System.out.printf("[MainController] ✅ Call accepted from: %s (callId: %s)%n", 
-                                callInfo.callerUsername, callInfo.callId);
-                            
+                            System.out.printf("[MainController] ✅ Call accepted from: %s (callId: %s)%n",
+                                    callInfo.callerUsername, callInfo.callId);
+
                             // Close incoming dialog
                             dialog.close();
-                            
+
                             // Accept the call
                             callManager.acceptCall(callInfo.callId);
-                            
+
                             // Open ActiveCallDialog
                             Platform.runLater(() -> {
                                 currentActiveCallDialog = new ActiveCallDialog(
-                                    callInfo.callerUsername,
-                                    callInfo.callId,
-                                    callInfo.videoEnabled,
-                                    callManager
+                                        callInfo.callerUsername,
+                                        callInfo.callId,
+                                        callInfo.videoEnabled,
+                                        callManager
                                 );
                                 currentActiveCallDialog.show();
                                 System.out.println("[MainController] 📺 ActiveCallDialog opened after accepting call");
-                                
+
                                 // Attach local video track if video enabled
                                 if (callInfo.videoEnabled) {
                                     dev.onvoid.webrtc.media.video.VideoTrack localVideo = callManager.getLocalVideoTrack();
-                                    System.out.printf("[MainController] 🔍 Local video track: %s%n", 
-                                        localVideo != null ? "EXISTS" : "NULL");
-                                    
+                                    System.out.printf("[MainController] 🔍 Local video track: %s%n",
+                                            localVideo != null ? "EXISTS" : "NULL");
+
                                     if (localVideo != null) {
                                         currentActiveCallDialog.attachLocalVideo(localVideo);
                                         System.out.println("[MainController] 📹 Local video attached to dialog");
@@ -784,24 +810,24 @@ public class MainController {
                                 }
                             });
                         } else {
-                            System.out.printf("[MainController] ❌ Call rejected from: %s (callId: %s)%n", 
-                                callInfo.callerUsername, callInfo.callId);
+                            System.out.printf("[MainController] ❌ Call rejected from: %s (callId: %s)%n",
+                                    callInfo.callerUsername, callInfo.callId);
                             callManager.rejectCall(callInfo.callId);
                         }
                     });
-                    
+
                 } catch (Exception e) {
                     System.err.printf("[MainController] ❌ Failed to show incoming call dialog: %s%n", e.getMessage());
                     e.printStackTrace();
                 }
             });
         });
-        
+
         // Handle call ended (close dialog)
         callManager.setOnCallEndedCallback(callId -> {
             Platform.runLater(() -> {
                 System.out.printf("[MainController] 📴 Call ended: %s%n", callId);
-                
+
                 // Close active call dialog if it exists
                 if (currentActiveCallDialog != null) {
                     currentActiveCallDialog.close();
@@ -810,7 +836,7 @@ public class MainController {
                 }
             });
         });
-        
+
         System.out.println("[MainController] ✅ Global incoming call handler registered");
     }
 }
