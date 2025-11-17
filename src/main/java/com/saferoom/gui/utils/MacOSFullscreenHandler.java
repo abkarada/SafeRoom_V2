@@ -8,13 +8,11 @@ import javafx.stage.Stage;
 
 public class MacOSFullscreenHandler {
 
-    // İşletim sisteminin macOS olup olmadığını kontrol eder
     public static boolean isMacOS() {
         String osName = System.getProperty("os.name").toLowerCase();
         return osName.contains("mac");
     }
 
-    // Tam ekran geçişini yöneten ana metot
     public static void handleMacOSFullscreen(Stage stage, boolean enterFullscreen) {
         if (stage == null) {
             return;
@@ -22,33 +20,52 @@ public class MacOSFullscreenHandler {
 
         try {
             if (enterFullscreen) {
-                // 1. macOS üst menü çubuğunu (Apple logosu vs.) gizlemek için 
-                // varsayılan ESC çıkışını iptal et (Kiosk modu gibi davranır)
+                // 1. Çıkış tuşunu iptal et
                 stage.setFullScreenExitKeyCombination(KeyCombination.NO_MATCH);
 
-                // 2. Önce Tam Ekrana geç
+                // 2. Tam ekrana geçişi başlat
                 stage.setFullScreen(true);
 
-                // 3. (Agent Tavsiyesi) Sahnenin tüm ekranı kapladığından emin olmak için
-                // işletim sistemine "Ben ekranın köşesindeyim ve tam boyuttayım" sinyali ver.
+                // 3. Ekran boyutlarını al
                 Rectangle2D screenBounds = Screen.getPrimary().getVisualBounds();
 
-                // Animasyonların bitmesi için çok kısa bir gecikme ile boyutları zorla
                 Platform.runLater(() -> {
+                    // --- ADIM A: Boyutları Ekrana Eşitle ---
                     stage.setX(screenBounds.getMinX());
                     stage.setY(screenBounds.getMinY());
                     stage.setWidth(screenBounds.getWidth());
                     stage.setHeight(screenBounds.getHeight());
+
+                    // --- ADIM B (KELEPÇE): Min ve Max boyutları sabitle ---
+                    // Pencerenin alabileceği en küçük ve en büyük boyutu 
+                    // ekran boyutuna kilitle. Resizing fiziksel olarak imkansız olur.
+                    stage.setMinWidth(screenBounds.getWidth());
+                    stage.setMinHeight(screenBounds.getHeight());
+                    stage.setMaxWidth(screenBounds.getWidth());
+                    stage.setMaxHeight(screenBounds.getHeight());
+
+                    // --- ADIM C: İşletim Sistemine de bildir ---
+                    stage.setResizable(false);
                 });
 
             } else {
                 // Tam ekrandan çık
                 stage.setFullScreen(false);
 
-                // Çıkış tuşunu normale döndür
+                // --- KİLİDİ AÇ ---
+                stage.setResizable(true);
+
+                // DÜZELTME BURADA:
+                // 800 ve 600 yerine, uygulamanızın gerçek minimum değerlerini yazıyoruz.
+                stage.setMinWidth(1024);
+                stage.setMinHeight(768);
+
+                stage.setMaxWidth(Double.MAX_VALUE);
+                stage.setMaxHeight(Double.MAX_VALUE);
+
                 stage.setFullScreenExitKeyCombination(KeyCombination.keyCombination("Esc"));
 
-                // Makul bir boyuta geri dön ve ortala
+                // Eski boyutuna döndür
                 stage.setWidth(1280);
                 stage.setHeight(800);
                 stage.centerOnScreen();

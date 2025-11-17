@@ -532,28 +532,33 @@ public class MainController {
     private void handleMaximize() {
         Stage stage = (Stage) mainPane.getScene().getWindow();
 
-        // Agent Yöntemi: Platform kontrolü yap
-        if (MacOSFullscreenHandler.isMacOS()) {
-            // macOS ise özel Handler'ı kullan
+        // İşletim sistemini kontrol et
+        String osName = System.getProperty("os.name").toLowerCase();
+        boolean isMacOS = osName.contains("mac");
+        // Linux/Unix kontrolü ekle
+        boolean isLinux = osName.contains("nix") || osName.contains("nux") || osName.contains("aix");
+
+        // DÜZELTME BURADA:
+        // Eğer işletim sistemi Mac VEYA Linux ise, bizim yazdığımız özel Handler'ı kullan.
+        if (isMacOS || isLinux) {
+
             if (stage.isFullScreen()) {
-                // Çıkış yap
+                // Çıkış (Linux için de çalışır)
                 MacOSFullscreenHandler.handleMacOSFullscreen(stage, false);
 
-                // İkonu "Büyüt" yap
                 if (maximizeButton != null && maximizeButton.getGraphic() instanceof FontIcon) {
                     ((FontIcon) maximizeButton.getGraphic()).setIconLiteral("far-square");
                 }
             } else {
-                // Giriş yap
+                // Giriş (Linux için de çalışır)
                 MacOSFullscreenHandler.handleMacOSFullscreen(stage, true);
 
-                // İkonu "Küçült" yap
                 if (maximizeButton != null && maximizeButton.getGraphic() instanceof FontIcon) {
                     ((FontIcon) maximizeButton.getGraphic()).setIconLiteral("far-clone");
                 }
             }
         } else {
-            // Windows/Linux ise standart yöntemi kullan
+            // Windows: Standart JavaFX davranışı (Windows şeffaf pencereleri daha iyi yönetir)
             if (stage.isMaximized()) {
                 stage.setMaximized(false);
                 if (maximizeButton != null && maximizeButton.getGraphic() instanceof FontIcon) {
