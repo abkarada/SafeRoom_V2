@@ -58,28 +58,29 @@ public class P2PConnectionManager {
         return instance;
     }
     
+    // ⚡ LAZY LOADING flags
+    private boolean signalingReady = false;
+    private boolean webrtcReady = false;
+    
     /**
      * Initialize P2P system for messaging/file transfer
      * Called from ClientMenu.registerUserForP2P()
+     * 
+     * ⚡ LAZY LOADING: WebRTC is NOT loaded here!
+     * Only signaling is initialized (lightweight)
+     * WebRTC will load on first P2P connection attempt
      */
     public void initialize(String username) {
+        if (signalingReady) {
+            return;
+        }
+        
         this.myUsername = username;
         
-        System.out.printf("[P2P] Initializing P2P messaging for: %s%n", username);
+        System.out.printf("[P2P] ⚡ Initializing P2P signaling for: %s (WebRTC deferred)%n", username);
         
-        // Initialize WebRTC factory (shared with CallManager)
-        if (!WebRTCClient.isInitialized()) {
-            System.out.println("[P2P] WebRTC not initialized, initializing now...");
-            WebRTCClient.initialize();
-        }
-        
-        // Get factory reference from WebRTCClient
-        this.factory = WebRTCClient.getFactory();
-        if (this.factory == null) {
-            System.err.println("[P2P] WebRTC factory is null (running in mock mode)");
-        } else {
-            System.out.println("[P2P] WebRTC factory initialized successfully");
-        }
+        // ⚡ DON'T initialize WebRTC here! It will load lazily when needed.
+        // Just setup signaling for now.
         
         // IMPORTANT: Share WebRTCSignalingClient with CallManager
         // Get signaling client from CallManager to avoid callback conflicts
@@ -110,7 +111,39 @@ public class P2PConnectionManager {
             this.signalingClient.setOnIncomingSignalCallback(this::handleIncomingSignal);
         }
         
-        System.out.printf("[P2P] P2P messaging initialized for %s%n", username);
+        signalingReady = true;
+        System.out.printf("[P2P] ⚡ P2P signaling ready for %s (WebRTC will load on first connection)%n", username);
+    }
+    
+    /**
+     * ⚡ LAZY LOAD: Ensure WebRTC is initialized before creating connections
+     * This is called automatically when needed
+     */
+    private synchronized void ensureWebRTCReady() {
+        if (webrtcReady) {
+            return;
+        }
+        
+        System.out.println("[P2P] 🎬 Loading WebRTC for P2P connections...");
+        long startTime = System.currentTimeMillis();
+        
+        // Initialize WebRTC factory (shared with CallManager)
+        if (!WebRTCClient.isInitialized()) {
+            System.out.println("[P2P] WebRTC not initialized, initializing now...");
+            WebRTCClient.initialize();
+        }
+        
+        // Get factory reference from WebRTCClient
+        this.factory = WebRTCClient.getFactory();
+        if (this.factory == null) {
+            System.err.println("[P2P] WebRTC factory is null (running in mock mode)");
+        } else {
+            System.out.println("[P2P] WebRTC factory initialized successfully");
+        }
+        
+        webrtcReady = true;
+        long elapsed = System.currentTimeMillis() - startTime;
+        System.out.printf("[P2P] ✅ WebRTC loaded in %dms%n", elapsed);
     }
     
     /**
@@ -171,6 +204,9 @@ public class P2PConnectionManager {
      */
     public CompletableFuture<Boolean> createConnection(String targetUsername) {
         System.out.printf("[P2P] Creating P2P connection to: %s%n", targetUsername);
+        
+        // ⚡ LAZY LOAD: Initialize WebRTC only when actually creating a connection
+        ensureWebRTCReady();
         
         // Check if already connected
         if (activeConnections.containsKey(targetUsername)) {
@@ -305,6 +341,9 @@ public class P2PConnectionManager {
         String remoteUsername = signal.getFrom();
         String incomingRoomId = signal.getRoomId();  // Use roomId like GroupCallManager
         System.out.printf("[P2P] Handling MESH_OFFER from %s (roomId: %s)%n", remoteUsername, incomingRoomId);
+        
+        // ⚡ LAZY LOAD: Initialize WebRTC for incoming P2P connections
+        ensureWebRTCReady();
         
         // Skip if already have active connection
         if (activeConnections.containsKey(remoteUsername)) {

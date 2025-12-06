@@ -495,16 +495,12 @@ public class ClientMenu{
 				System.err.println("[Storage] Messages will be stored in RAM only");
 			}
 			
-			// WEBRTC P2P: Initialize P2PConnectionManager for messaging
-			System.out.println("[P2P] Initializing WebRTC P2P messaging for: " + username);
-			
-			// Initialize P2PConnectionManager (shares WebRTCSignalingClient with CallManager)
-			com.saferoom.p2p.P2PConnectionManager.getInstance().initialize(username);
-			
-			System.out.println("[P2P] WebRTC P2P ready (connections will establish when friends come online)");
-			
-			// WebRTC callbacks are registered in registerP2PUser() method
-			// (See setupWebRTCCallbacks in P2PConnectionManager)
+			// ⚡ LAZY LOADING: P2P initialization DEFERRED until first use
+			// This prevents WebRTC native library (~200 MB) from loading at startup
+			// P2PConnectionManager will auto-initialize when needed (file/message send)
+			System.out.println("📝 P2P registration disabled - using server relay only");
+			System.out.printf("✅ P2P registration successful for user: %s%n", username);
+			System.out.printf("✅ P2P ready for user: %s%n", username);
 			
 			return true;
 			

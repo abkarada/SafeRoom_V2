@@ -1,375 +1,388 @@
-/* ============================================
-   SECURE FILES STYLING
-   ============================================ */
+/* =================================================================
+   SECURE FILES - POLISHED DASHBOARD STYLE
+   Clean, aligned, professional
+   ================================================================= */
 
 .secure-files-root {
-    -fx-background-color: #0f172a;
+    -fx-background-color: #1e2b3b;
 }
 
-.secure-files-header {
-    -fx-background-color: #1e293b;
+/* =================================================================
+   HEADER
+   ================================================================= */
+.sf-hero {
+    -fx-background-color: #0f172a;
     -fx-border-color: #334155;
     -fx-border-width: 0 0 1 0;
 }
 
-.secure-files-content {
-    -fx-background-color: #0f172a;
-}
-
-.page-title {
-    -fx-font-size: 24px;
-    -fx-font-weight: bold;
-    -fx-text-fill: white;
-}
-
-.vault-stats {
-    -fx-font-size: 14px;
-    -fx-text-fill: #94a3b8;
-}
-
-/* ============================================
-   DROP ZONE
-   ============================================ */
-
-.drop-zone {
-    -fx-background-color: #1e293b;
-    -fx-border-color: #475569;
-    -fx-border-width: 2;
-    -fx-border-style: dashed;
-    -fx-border-radius: 12;
+.sf-icon-badge {
+    -fx-background-color: linear-gradient(to bottom right, #3b82f6, #8b5cf6);
     -fx-background-radius: 12;
-    -fx-padding: 60 40;
-    -fx-cursor: hand;
-    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.2), 8, 0, 0, 2);
-}
-
-.drop-zone:hover {
-    -fx-border-color: #64748b;
-    -fx-background-color: #2a3544;
-}
-
-.drop-zone-label {
-    -fx-font-size: 18px;
-    -fx-font-weight: bold;
-    -fx-text-fill: white;
-}
-
-.drop-zone-sublabel {
-    -fx-font-size: 14px;
-    -fx-text-fill: #94a3b8;
-}
-
-.compress-checkbox {
-    -fx-text-fill: #94a3b8;
-}
-
-.compress-checkbox .box {
-    -fx-background-color: #1e293b;
-    -fx-border-color: #475569;
-    -fx-border-radius: 4;
-}
-
-.compress-checkbox:selected .box {
-    -fx-background-color: #22d3ee;
-    -fx-border-color: #22d3ee;
-}
-
-.compress-checkbox .mark {
-    -fx-background-color: white;
-}
-
-/* ============================================
-   BUTTONS
-   ============================================ */
-
-.primary-button {
-    -fx-background-color: linear-gradient(to bottom, #22d3ee, #06b6d4);
-    -fx-text-fill: white;
-    -fx-font-size: 14px;
-    -fx-font-weight: bold;
-    -fx-padding: 10 20;
-    -fx-background-radius: 8;
-    -fx-cursor: hand;
-    -fx-effect: dropshadow(gaussian, rgba(34, 211, 238, 0.3), 8, 0, 0, 2);
-}
-
-.primary-button:hover {
-    -fx-background-color: linear-gradient(to bottom, #06b6d4, #0891b2);
-    -fx-effect: dropshadow(gaussian, rgba(34, 211, 238, 0.5), 12, 0, 0, 3);
-}
-
-.secondary-button {
-    -fx-background-color: #475569;
-    -fx-text-fill: white;
-    -fx-font-size: 14px;
-    -fx-padding: 10 20;
-    -fx-background-radius: 8;
-    -fx-cursor: hand;
-}
-
-.secondary-button:hover {
-    -fx-background-color: #64748b;
-}
-
-.icon-button {
-    -fx-background-color: transparent;
-    -fx-text-fill: #94a3b8;
-    -fx-padding: 8;
-    -fx-background-radius: 6;
-    -fx-cursor: hand;
-}
-
-.icon-button:hover {
-    -fx-background-color: #1e293b;
-    -fx-text-fill: #22d3ee;
-}
-
-.icon-button-large {
-    -fx-background-color: #1e293b;
     -fx-padding: 12;
-    -fx-background-radius: 8;
+    -fx-min-width: 46;
+    -fx-min-height: 46;
+    -fx-max-width: 46;
+    -fx-max-height: 46;
+    -fx-alignment: center;
+}
+
+.sf-icon-badge .ikonli-font-icon {
+    -fx-icon-color: white;
+}
+
+.sf-title {
+    -fx-text-fill: white;
+    -fx-font-size: 22px;
+    -fx-font-weight: bold;
+}
+
+.sf-subtitle {
+    -fx-text-fill: #64748b;
+    -fx-font-size: 13px;
+}
+
+.sf-pill {
+    -fx-background-color: linear-gradient(to right, #3b82f6, #8b5cf6);
+    -fx-background-radius: 20;
+    -fx-padding: 8 18;
+    -fx-text-fill: white;
+    -fx-font-size: 12px;
+    -fx-font-weight: bold;
+}
+
+.sf-ghost-button {
+    -fx-background-color: #1e293b;
+    -fx-background-radius: 10;
+    -fx-padding: 10;
+    -fx-min-width: 38;
+    -fx-min-height: 38;
+    -fx-max-width: 38;
+    -fx-max-height: 38;
     -fx-cursor: hand;
 }
 
-.icon-button-large:hover {
+.sf-ghost-button:hover {
     -fx-background-color: #334155;
 }
 
-/* ============================================
-   VAULT SECTION
-   ============================================ */
+.sf-ghost-button .ikonli-font-icon {
+    -fx-icon-color: #64748b;
+}
 
-.section-title {
+.sf-ghost-button:hover .ikonli-font-icon {
+    -fx-icon-color: #3b82f6;
+}
+
+/* =================================================================
+   BODY
+   ================================================================= */
+.sf-body {
+    -fx-background-color: transparent;
+}
+
+/* =================================================================
+   DROP ZONE
+   ================================================================= */
+.sf-drop-zone {
+    -fx-background-color: #0f172a;
+    -fx-border-color: #3b82f6;
+    -fx-border-style: dashed;
+    -fx-border-width: 2;
+    -fx-border-radius: 20;
+    -fx-background-radius: 20;
+    -fx-padding: 32;
+    -fx-cursor: hand;
+}
+
+.sf-drop-zone:hover {
+    -fx-background-color: #1a2744;
+    -fx-border-color: #60a5fa;
+}
+
+.sf-drop-zone .ikonli-font-icon {
+    -fx-icon-color: #3b82f6;
+}
+
+.sf-drop-label {
+    -fx-text-fill: white;
     -fx-font-size: 18px;
     -fx-font-weight: bold;
-    -fx-text-fill: white;
 }
 
-.search-field {
+.sf-drop-sublabel {
+    -fx-text-fill: #64748b;
+    -fx-font-size: 13px;
+}
+
+/* =================================================================
+   BUTTONS
+   ================================================================= */
+.sf-btn-primary {
+    -fx-background-color: linear-gradient(to right, #3b82f6, #8b5cf6);
+    -fx-text-fill: white;
+    -fx-font-weight: bold;
+    -fx-font-size: 13px;
+    -fx-padding: 12 24;
+    -fx-background-radius: 12;
+    -fx-cursor: hand;
+    -fx-graphic-text-gap: 8;
+}
+
+.sf-btn-primary:hover {
+    -fx-background-color: linear-gradient(to right, #60a5fa, #a78bfa);
+}
+
+.sf-btn-primary .ikonli-font-icon {
+    -fx-icon-color: white;
+}
+
+/* =================================================================
+   CHECKBOX
+   ================================================================= */
+.sf-checkbox {
+    -fx-text-fill: #94a3b8;
+    -fx-font-size: 13px;
+}
+
+.sf-checkbox .box {
     -fx-background-color: #1e293b;
+    -fx-border-color: #475569;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+    -fx-padding: 2;
+}
+
+.sf-checkbox:hover .box {
+    -fx-border-color: #3b82f6;
+}
+
+.sf-checkbox:selected .box {
+    -fx-background-color: #3b82f6;
+    -fx-border-color: #3b82f6;
+}
+
+.sf-checkbox .mark {
+    -fx-background-color: white;
+}
+
+/* =================================================================
+   PANEL
+   ================================================================= */
+.sf-panel {
+    -fx-background-color: #0f172a;
+    -fx-background-radius: 16;
+    -fx-padding: 20;
+}
+
+.sf-section-title {
+    -fx-text-fill: white;
+    -fx-font-size: 18px;
+    -fx-font-weight: bold;
+}
+
+/* =================================================================
+   SEARCH
+   ================================================================= */
+.sf-search {
+    -fx-background-color: #1e293b;
+    -fx-background-radius: 10;
+    -fx-border-color: transparent;
+    -fx-border-radius: 10;
     -fx-text-fill: white;
     -fx-prompt-text-fill: #64748b;
-    -fx-border-color: #475569;
-    -fx-border-radius: 6;
-    -fx-background-radius: 6;
-    -fx-padding: 8 12;
+    -fx-padding: 10 14;
+    -fx-font-size: 13px;
+    -fx-pref-height: 38;
 }
 
-.search-field:focused {
-    -fx-border-color: #22d3ee;
+.sf-search:focused {
+    -fx-background-color: #1e293b;
+    -fx-border-color: #3b82f6;
+    -fx-border-width: 1;
 }
 
-.vault-scroll-pane {
+/* =================================================================
+   FILTER BUTTONS
+   ================================================================= */
+.sf-filter-btn {
+    -fx-background-color: #1e293b;
+    -fx-text-fill: #94a3b8;
+    -fx-font-size: 14px;
+    -fx-font-weight: bold;
+    -fx-background-radius: 24;
+    -fx-padding: 12 24;
+    -fx-cursor: hand;
+    -fx-graphic-text-gap: 8;
+    -fx-min-height: 44;
+}
+
+.sf-filter-btn:hover {
+    -fx-background-color: #334155;
+    -fx-text-fill: white;
+}
+
+.sf-filter-btn.active {
+    -fx-background-color: linear-gradient(to right, #3b82f6, #8b5cf6);
+    -fx-text-fill: white;
+}
+
+.sf-filter-btn .ikonli-font-icon {
+    -fx-icon-color: #64748b;
+    -fx-icon-size: 14;
+}
+
+.sf-filter-btn:hover .ikonli-font-icon {
+    -fx-icon-color: white;
+}
+
+.sf-filter-btn.active .ikonli-font-icon {
+    -fx-icon-color: white;
+}
+
+/* =================================================================
+   VAULT AREA
+   ================================================================= */
+.sf-vault-area {
+    -fx-background-color: transparent;
+}
+
+.sf-vault-area .vault-scroll-pane {
     -fx-background-color: transparent;
     -fx-background: transparent;
 }
 
-.vault-scroll-pane .viewport {
+.sf-vault-area .vault-scroll-pane > .viewport {
     -fx-background-color: transparent;
 }
 
-.vault-scroll-pane .scroll-bar {
+.sf-vault-area .vault-scroll-pane .scroll-bar {
     -fx-background-color: transparent;
 }
 
-.vault-scroll-pane .scroll-bar .thumb {
-    -fx-background-color: #475569;
-    -fx-background-radius: 4;
+.sf-vault-area .vault-scroll-pane .scroll-bar .thumb {
+    -fx-background-color: #334155;
+    -fx-background-radius: 6;
 }
 
-.vault-scroll-pane .scroll-bar .thumb:hover {
-    -fx-background-color: #64748b;
+.sf-vault-area .vault-scroll-pane .scroll-bar .thumb:hover {
+    -fx-background-color: #3b82f6;
 }
 
-.files-grid {
+.sf-vault-area .vault-scroll-pane .scroll-bar .track {
     -fx-background-color: transparent;
-    -fx-padding: 10;
 }
 
-/* ============================================
+.sf-vault-area .vault-scroll-pane .scroll-bar .increment-button,
+.sf-vault-area .vault-scroll-pane .scroll-bar .decrement-button {
+    -fx-background-color: transparent;
+    -fx-padding: 0;
+}
+
+.sf-vault-area .vault-scroll-pane .scroll-bar .increment-arrow,
+.sf-vault-area .vault-scroll-pane .scroll-bar .decrement-arrow {
+    -fx-shape: " ";
+    -fx-padding: 0;
+}
+
+/* =================================================================
    FILE CARDS
-   ============================================ */
+   ================================================================= */
+.secure-files-root .files-grid {
+    -fx-padding: 12;
+}
 
-.file-card {
+.secure-files-root .file-card {
     -fx-background-color: #1e293b;
-    -fx-background-radius: 12;
-    -fx-border-color: #334155;
-    -fx-border-radius: 12;
-    -fx-border-width: 1;
-    -fx-padding: 20;
-    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.2), 6, 0, 0, 2);
+    -fx-background-radius: 14;
+    -fx-padding: 16;
+    -fx-pref-width: 180;
+    -fx-pref-height: 200;
 }
 
-.file-card:hover {
-    -fx-border-color: #22d3ee;
-    -fx-effect: dropshadow(gaussian, rgba(34, 211, 238, 0.2), 12, 0, 0, 3);
-    -fx-translate-y: -2;
+.secure-files-root .file-card:hover {
+    -fx-background-color: #273549;
 }
 
-.file-card-name {
-    -fx-font-size: 14px;
-    -fx-font-weight: bold;
+.secure-files-root .file-card-name {
     -fx-text-fill: white;
-    -fx-text-alignment: center;
+    -fx-font-size: 13px;
+    -fx-font-weight: bold;
 }
 
-.file-card-size {
-    -fx-font-size: 12px;
+.secure-files-root .file-card-size {
     -fx-text-fill: #94a3b8;
-}
-
-.file-card-date {
     -fx-font-size: 11px;
+}
+
+.secure-files-root .file-card-date {
     -fx-text-fill: #64748b;
+    -fx-font-size: 10px;
 }
 
-.file-card-action {
+.secure-files-root .file-card-action {
     -fx-background-color: #334155;
-    -fx-text-fill: #94a3b8;
-    -fx-padding: 6;
-    -fx-background-radius: 6;
+    -fx-background-radius: 8;
+    -fx-padding: 8;
     -fx-cursor: hand;
+    -fx-min-width: 32;
+    -fx-min-height: 32;
 }
 
-.file-card-action:hover {
-    -fx-background-color: #475569;
-    -fx-text-fill: #22d3ee;
+.secure-files-root .file-card-action:hover {
+    -fx-background-color: #3b82f6;
 }
 
-.file-card-action-danger {
+.secure-files-root .file-card-action .ikonli-font-icon {
+    -fx-icon-color: #94a3b8;
+    -fx-icon-size: 12;
+}
+
+.secure-files-root .file-card-action:hover .ikonli-font-icon {
+    -fx-icon-color: white;
+}
+
+.secure-files-root .file-card-action-danger {
     -fx-background-color: #334155;
-    -fx-text-fill: #94a3b8;
-    -fx-padding: 6;
-    -fx-background-radius: 6;
+    -fx-background-radius: 8;
+    -fx-padding: 8;
     -fx-cursor: hand;
+    -fx-min-width: 32;
+    -fx-min-height: 32;
 }
 
-.file-card-action-danger:hover {
-    -fx-background-color: #7f1d1d;
-    -fx-text-fill: #ef4444;
+.secure-files-root .file-card-action-danger:hover {
+    -fx-background-color: #ef4444;
 }
 
-/* ============================================
+.secure-files-root .file-card-action-danger .ikonli-font-icon {
+    -fx-icon-color: #94a3b8;
+    -fx-icon-size: 12;
+}
+
+.secure-files-root .file-card-action-danger:hover .ikonli-font-icon {
+    -fx-icon-color: white;
+}
+
+/* =================================================================
    EMPTY STATE
-   ============================================ */
-
-.empty-state {
+   ================================================================= */
+.sf-empty-state {
+    -fx-background-color: transparent;
     -fx-padding: 60;
 }
 
-.empty-state-label {
+.sf-empty-state .ikonli-font-icon {
+    -fx-icon-color: #334155;
+}
+
+.sf-empty-title {
+    -fx-text-fill: white;
     -fx-font-size: 18px;
     -fx-font-weight: bold;
+}
+
+.sf-empty-subtitle {
     -fx-text-fill: #64748b;
+    -fx-font-size: 13px;
 }
-
-.empty-state-sublabel {
-    -fx-font-size: 14px;
-    -fx-text-fill: #475569;
-}
-
-/* ============================================
-   KEY POPUP
-   ============================================ */
-
-.key-popup-root {
-    -fx-background-color: #1e293b;
-    -fx-background-radius: 12;
-}
-
-.popup-title {
-    -fx-font-size: 22px;
-    -fx-font-weight: bold;
-    -fx-text-fill: white;
-}
-
-.popup-subtitle {
-    -fx-font-size: 14px;
-    -fx-text-fill: #94a3b8;
-    -fx-wrap-text: true;
-}
-
-.key-display-container {
-    -fx-background-color: #0f172a;
-    -fx-background-radius: 8;
-    -fx-padding: 15;
-    -fx-border-color: #334155;
-    -fx-border-radius: 8;
-    -fx-border-width: 1;
-}
-
-.key-label {
-    -fx-font-size: 12px;
-    -fx-font-weight: bold;
-    -fx-text-fill: #94a3b8;
-    -fx-text-transform: uppercase;
-}
-
-.key-box {
-    -fx-background-color: #0a0f1a;
-    -fx-background-radius: 6;
-    -fx-padding: 10;
-    -fx-border-color: #475569;
-    -fx-border-radius: 6;
-    -fx-border-width: 1;
-}
-
-.key-textarea {
-    -fx-background-color: transparent;
-    -fx-text-fill: #22d3ee;
-    -fx-font-family: "Courier New", monospace;
-    -fx-font-size: 11px;
-    -fx-border-color: transparent;
-}
-
-.key-textarea .content {
-    -fx-background-color: transparent;
-}
-
-.qr-container {
-    -fx-padding: 10;
-}
-
-.qr-code-box {
-    -fx-background-color: white;
-    -fx-background-radius: 8;
-    -fx-padding: 10;
-    -fx-effect: dropshadow(gaussian, rgba(0, 0, 0, 0.2), 8, 0, 0, 2);
-}
-
-.qr-sublabel {
-    -fx-font-size: 11px;
-    -fx-text-fill: #64748b;
-}
-
-.file-info-container {
-    -fx-background-color: #0f172a;
-    -fx-background-radius: 8;
-    -fx-padding: 15;
-}
-
-.info-label {
-    -fx-font-size: 12px;
-    -fx-text-fill: #94a3b8;
-}
-
-.info-value {
-    -fx-font-size: 12px;
-    -fx-font-weight: bold;
-    -fx-text-fill: white;
-}
-
-.warning-box {
-    -fx-background-color: rgba(245, 158, 11, 0.1);
-    -fx-background-radius: 6;
-    -fx-padding: 10;
-    -fx-border-color: #f59e0b;
-    -fx-border-radius: 6;
-    -fx-border-width: 1;
-}
-
-.warning-label {
-    -fx-font-size: 12px;
-    -fx-text-fill: #fbbf24;
-}
-

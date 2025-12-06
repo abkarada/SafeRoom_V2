@@ -5,7 +5,7 @@ import com.saferoom.gui.dialog.ScreenSourcePickerDialog;
 import com.saferoom.webrtc.CallManager;
 import com.saferoom.webrtc.screenshare.ScreenShareController;
 import com.saferoom.webrtc.screenshare.ScreenSourceOption;
-import dev.onvoid.webrtc.media.video.VideoTrack;
+// VideoTrack import deferred - cast at runtime to avoid loading native lib at startup
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
@@ -540,11 +540,13 @@ public class ActiveCallDialog {
     
     /**
      * Attach local video track for preview
+     * @param track Object that should be a VideoTrack (deferred loading)
      */
-    public void attachLocalVideo(VideoTrack track) {
+    public void attachLocalVideo(Object track) {
         if (localVideoPanel != null && track != null) {
             System.out.println("[ActiveCallDialog] Attaching local video track");
-            localVideoPanel.attachVideoTrack(track);
+            // Cast at runtime - VideoTrack class loaded only when this method is called
+            localVideoPanel.attachVideoTrack((dev.onvoid.webrtc.media.video.VideoTrack) track);
         }
     }
     
@@ -552,11 +554,19 @@ public class ActiveCallDialog {
      * Attach remote video track for display
      * With replaceTrack(), same track ID (video0) is used for camera and screen share
      * We simply display the current video track content (camera or screen)
+     * @param track Object that should be a VideoTrack (deferred loading)
      */
-    public void attachRemoteVideo(VideoTrack track) {
+    public void attachRemoteVideo(Object track) {
         if (track == null) return;
         
-        String trackId = track.getId();
+        // Check if it's actually a VideoTrack (class loaded only here)
+        if (!(track instanceof dev.onvoid.webrtc.media.video.VideoTrack)) {
+            System.out.println("[ActiveCallDialog] Track is not a VideoTrack, ignoring");
+            return;
+        }
+        
+        dev.onvoid.webrtc.media.video.VideoTrack videoTrack = (dev.onvoid.webrtc.media.video.VideoTrack) track;
+        String trackId = videoTrack.getId();
         System.out.printf("[ActiveCallDialog] Attaching remote video track: %s%n", trackId);
         
         // With replaceTrack(), the track content changes but ID stays same (video0)
@@ -568,7 +578,7 @@ public class ActiveCallDialog {
             remoteVideoPanel.detachVideoTrack();
             
             // Attach new track (will show camera or screen share depending on sender)
-            remoteVideoPanel.attachVideoTrack(track);
+            remoteVideoPanel.attachVideoTrack(videoTrack);
             if (isShowingScreen) {
                 remoteVideoPanel.pauseRendering();
             } else {

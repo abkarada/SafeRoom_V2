@@ -21,7 +21,7 @@ import com.saferoom.storage.LocalDatabase;
 import com.saferoom.storage.SqlCipherHelper;
 import com.saferoom.webrtc.CallManager;
 
-import dev.onvoid.webrtc.media.video.VideoTrack;
+// VideoTrack import removed - use Object to avoid loading native lib at startup
 import javafx.animation.FadeTransition;
 import javafx.animation.KeyFrame;
 import javafx.animation.KeyValue;
@@ -1657,7 +1657,7 @@ public class ChatViewController {
                     currentActiveCallDialog = new ActiveCallDialog(currentChannelId, callId, currentCallVideoEnabled, callManager);
                     currentActiveCallDialog.show();
                     if (currentCallVideoEnabled) {
-                        VideoTrack localVideo = callManager.getLocalVideoTrack();
+                        Object localVideo = callManager.getLocalVideoTrack();
                         if (localVideo != null) {
                             currentActiveCallDialog.attachLocalVideo(localVideo);
                         }
@@ -1695,8 +1695,9 @@ public class ChatViewController {
 
         callManager.setOnRemoteTrackCallback(track -> {
             Platform.runLater(() -> {
-                if (track instanceof VideoTrack && currentActiveCallDialog != null) {
-                    currentActiveCallDialog.attachRemoteVideo((VideoTrack) track);
+                // Track type check moved to ActiveCallDialog to avoid loading WebRTC native at startup
+                if (currentActiveCallDialog != null) {
+                    currentActiveCallDialog.attachRemoteVideo(track);
                 }
             });
         });

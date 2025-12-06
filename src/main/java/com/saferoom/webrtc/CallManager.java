@@ -90,26 +90,25 @@ public class CallManager {
         return instance;
     }
     
+    // ⚡ LAZY LOADING flags
+    private boolean signalingInitialized = false;
+    private boolean webrtcInitialized = false;
+    
     /**
-     * Initialize call manager
+     * Initialize ONLY signaling (lightweight - no WebRTC native libs)
+     * Used at app startup to receive call notifications without loading heavy libs
+     * ~0 MB additional RAM
      */
-    public void initialize(String username) {
-        // 🔧 Prevent re-initialization
-        if (isInitialized) {
-            System.out.printf("[CallManager] ⚠️ Already initialized for user: %s (current: %s)%n", myUsername, username);
+    public void initializeSignalingOnly(String username) {
+        if (signalingInitialized) {
             return;
         }
         
         this.myUsername = username;
         
-        System.out.printf("[CallManager] 🔧 Initializing for user: %s%n", username);
+        System.out.printf("[CallManager] ⚡ Initializing signaling only for user: %s (WebRTC deferred)%n", username);
         
-        // Initialize WebRTC client library
-        if (!WebRTCClient.isInitialized()) {
-            WebRTCClient.initialize();
-        }
-        
-        // Create signaling client
+        // Create signaling client (lightweight gRPC - ~5MB)
         signalingClient = new WebRTCSignalingClient(username);
         
         // Set incoming signal handler
@@ -118,16 +117,67 @@ public class CallManager {
         // Start signaling stream for real-time signals
         signalingClient.startSignalingStream();
         
-        this.isInitialized = true; // 🔧 Mark as initialized
+        this.signalingInitialized = true;
         
-        System.out.println("[CallManager] ✅ Initialization complete");
+        System.out.println("[CallManager] ⚡ Signaling ready (WebRTC will load on first call)");
     }
     
     /**
-     * Check if CallManager is initialized
+     * Ensure WebRTC is fully initialized (call before making/receiving calls)
+     * This loads the heavy native libraries (~100-150MB)
+     */
+    public synchronized void ensureWebRTCInitialized() {
+        if (webrtcInitialized) {
+            return;
+        }
+        
+        System.out.println("[CallManager] 🎬 Loading WebRTC native libraries...");
+        long startTime = System.currentTimeMillis();
+        
+        // Initialize WebRTC client library (HEAVY - ~100-150MB)
+        if (!WebRTCClient.isInitialized()) {
+            WebRTCClient.initialize();
+        }
+        
+        webrtcInitialized = true;
+        isInitialized = true;
+        
+        long elapsed = System.currentTimeMillis() - startTime;
+        System.out.printf("[CallManager] ✅ WebRTC loaded in %dms%n", elapsed);
+    }
+    
+    /**
+     * Full initialization (backward compatible - loads everything)
+     * @deprecated Use initializeSignalingOnly() + ensureWebRTCInitialized() for lazy loading
+     */
+    public void initialize(String username) {
+        // 🔧 Prevent re-initialization
+        if (isInitialized) {
+            System.out.printf("[CallManager] ⚠️ Already initialized for user: %s (current: %s)%n", myUsername, username);
+            return;
+        }
+        
+        // Initialize signaling first
+        initializeSignalingOnly(username);
+        
+        // Then load WebRTC
+        ensureWebRTCInitialized();
+        
+        System.out.println("[CallManager] ✅ Full initialization complete");
+    }
+    
+    /**
+     * Check if CallManager is initialized (signaling ready)
      */
     public boolean isInitialized() {
-        return isInitialized;
+        return signalingInitialized;
+    }
+    
+    /**
+     * Check if WebRTC native libs are loaded
+     */
+    public boolean isWebRTCReady() {
+        return webrtcInitialized;
     }
     
     // ===============================
@@ -142,6 +192,9 @@ public class CallManager {
             System.err.printf("[CallManager] ❌ Cannot start call - current state: %s%n", currentState);
             return CompletableFuture.failedFuture(new IllegalStateException("Already in a call"));
         }
+        
+        // ⚡ LAZY LOAD: Initialize WebRTC only when actually making a call
+        ensureWebRTCInitialized();
         
         System.out.printf("[CallManager] 📞 Starting call to %s (audio=%b, video=%b)%n", 
             targetUsername, audioEnabled, videoEnabled);
@@ -216,6 +269,9 @@ public class CallManager {
             System.err.println("[CallManager] ⚠️ No incoming call to accept");
             return;
         }
+        
+        // ⚡ LAZY LOAD: Initialize WebRTC only when actually accepting a call
+        ensureWebRTCInitialized();
         
         System.out.printf("[CallManager] ✅ Accepting call: %s%n", callId);
         

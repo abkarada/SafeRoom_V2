@@ -8,129 +8,113 @@
 <BorderPane xmlns="http://javafx.com/javafx"
             xmlns:fx="http://javafx.com/fxml"
             fx:controller="com.saferoom.securefiles.controller.SecureFilesController"
-            styleClass="secure-files-root">
-    
+            styleClass="secure-files-root"
+            stylesheets="@../styles/styles.css, @../css/secure-files.css">
+
     <!-- Header -->
     <top>
-        <VBox styleClass="secure-files-header">
-            <HBox alignment="CENTER_LEFT" spacing="15">
-                <FontIcon iconLiteral="fas-lock" iconSize="24" iconColor="#22d3ee" />
-                <Label text="Secure Files" styleClass="page-title" />
-                <Pane HBox.hgrow="ALWAYS" />
-                <Label fx:id="vaultStatsLabel" text="0 files encrypted" styleClass="vault-stats" />
-            </HBox>
+        <HBox styleClass="sf-hero" alignment="CENTER_LEFT" spacing="16">
             <padding>
-                <Insets top="20" right="30" bottom="20" left="30" />
+                <Insets top="20" right="32" bottom="20" left="32"/>
             </padding>
-        </VBox>
-    </top>
-    
-    <!-- Main Content -->
-    <center>
-        <VBox spacing="20" styleClass="secure-files-content">
-            <padding>
-                <Insets top="20" right="30" bottom="20" left="30" />
-            </padding>
-            
-            <!-- Drop Zone -->
-            <VBox fx:id="dropZone" styleClass="drop-zone" alignment="CENTER" spacing="15"
-                  onDragOver="#handleDragOver" onDragDropped="#handleDragDropped" onDragExited="#handleDragExited">
-                <VBox.margin>
-                    <Insets bottom="20" />
-                </VBox.margin>
-                
-                <FontIcon fx:id="dropZoneIcon" iconLiteral="fas-cloud-upload-alt" 
-                          iconSize="64" iconColor="#94a3b8" />
-                
-                <Label fx:id="dropZoneLabel" text="Drag &amp; drop files to encrypt" 
-                       styleClass="drop-zone-label" />
-                
-                <Label text="or click to browse" styleClass="drop-zone-sublabel" />
-                
-                <HBox spacing="15" alignment="CENTER">
-                    <Button fx:id="browseButton" text="Browse Files" 
-                            styleClass="primary-button" onAction="#handleBrowseFiles">
-                        <graphic>
-                            <FontIcon iconLiteral="fas-folder-open" iconSize="14" />
-                        </graphic>
-                    </Button>
-                    
-                    <CheckBox fx:id="compressCheckbox" text="Compress before encryption" 
-                              styleClass="compress-checkbox" selected="false" />
-                </HBox>
-                
-                <VBox.margin>
-                    <Insets top="10" bottom="10" />
-                </VBox.margin>
+            <StackPane styleClass="sf-icon-badge">
+                <FontIcon iconLiteral="fas-shield-alt" iconSize="22"/>
+            </StackPane>
+            <VBox spacing="2" HBox.hgrow="ALWAYS">
+                <Label text="Secure Files" styleClass="sf-title"/>
+                <Label text="Encrypted vault for your files" styleClass="sf-subtitle"/>
             </VBox>
-            
-            <!-- Vault Section -->
-            <VBox spacing="15" VBox.vgrow="ALWAYS">
-                <!-- Vault Header -->
-                <HBox alignment="CENTER_LEFT" spacing="15">
-                    <Label text="Your Files" styleClass="section-title" />
-                    <Pane HBox.hgrow="ALWAYS" />
+            <Label fx:id="vaultStatsLabel" text="0 files" styleClass="sf-pill"/>
+            <Button fx:id="refreshButton" styleClass="sf-ghost-button" onAction="#handleRefreshVault">
+                <graphic>
+                    <FontIcon iconLiteral="fas-sync-alt" iconSize="14"/>
+                </graphic>
+            </Button>
+        </HBox>
+    </top>
+
+    <!-- Content -->
+    <center>
+        <VBox spacing="16" styleClass="sf-body">
+            <padding>
+                <Insets top="20" right="32" bottom="20" left="32"/>
+            </padding>
+
+            <!-- Drop Zone -->
+            <HBox alignment="CENTER">
+                <VBox fx:id="dropZone" styleClass="sf-drop-zone" alignment="CENTER" spacing="16"
+                      onDragOver="#handleDragOver" onDragDropped="#handleDragDropped" onDragExited="#handleDragExited"
+                      HBox.hgrow="ALWAYS" maxWidth="900" prefHeight="200">
+                    <HBox.margin>
+                        <Insets left="60" right="60"/>
+                    </HBox.margin>
                     
-                    <!-- Category Filters -->
-                    <HBox fx:id="categoryFilterBar" spacing="6" alignment="CENTER_LEFT">
-                        <Button fx:id="filterAll" text="All" styleClass="filter-button" />
-                        <Button fx:id="filterImages" styleClass="filter-button">
+                    <FontIcon fx:id="dropZoneIcon" iconLiteral="fas-cloud-upload-alt" iconSize="56"/>
+                    <Label fx:id="dropZoneLabel" text="Drop files here to encrypt" styleClass="sf-drop-label"/>
+                    <Label text="or click Browse to select" styleClass="sf-drop-sublabel"/>
+                    
+                    <HBox spacing="16" alignment="CENTER">
+                        <Button fx:id="browseButton" text="Browse" styleClass="sf-btn-primary" onAction="#handleBrowseFiles">
                             <graphic>
-                                <FontIcon iconLiteral="fas-image" iconSize="12" />
+                                <FontIcon iconLiteral="fas-folder-open" iconSize="14"/>
                             </graphic>
-                            <text>Images</text>
                         </Button>
-                        <Button fx:id="filterDocuments" styleClass="filter-button">
-                            <graphic>
-                                <FontIcon iconLiteral="fas-file-alt" iconSize="12" />
-                            </graphic>
-                            <text>Docs</text>
-                        </Button>
-                        <Button fx:id="filterArchives" styleClass="filter-button">
-                            <graphic>
-                                <FontIcon iconLiteral="fas-file-archive" iconSize="12" />
-                            </graphic>
-                            <text>Archives</text>
-                        </Button>
-                        <Button fx:id="filterEncrypted" styleClass="filter-button">
-                            <graphic>
-                                <FontIcon iconLiteral="fas-lock" iconSize="12" />
-                            </graphic>
-                            <text>Encrypted</text>
-                        </Button>
+                        <CheckBox fx:id="compressCheckbox" text="Compress" styleClass="sf-checkbox"/>
                     </HBox>
-                    <Pane HBox.hgrow="ALWAYS" />
-                    
-                    <Button fx:id="refreshButton" styleClass="icon-button" 
-                            onAction="#handleRefreshVault">
-                        <graphic>
-                            <FontIcon iconLiteral="fas-sync-alt" iconSize="14" />
-                        </graphic>
-                        <tooltip>
-                            <Tooltip text="Refresh vault" />
-                        </tooltip>
-                    </Button>
-                    
-                    <TextField fx:id="searchField" promptText="Search files..." 
-                               styleClass="search-field" prefWidth="200" />
-                </HBox>
-                
-                <!-- Files Grid -->
-                <ScrollPane fx:id="vaultScrollPane" fitToWidth="true" 
-                            styleClass="vault-scroll-pane" VBox.vgrow="ALWAYS">
-                    <FlowPane fx:id="filesGrid" hgap="15" vgap="15" 
-                              styleClass="files-grid" />
-                </ScrollPane>
-                
-                <!-- Empty State -->
-                <VBox fx:id="emptyState" alignment="CENTER" spacing="12" 
-                      styleClass="empty-state" visible="true" managed="true">
-                    <FontIcon iconLiteral="fas-inbox" iconSize="52" iconColor="#6e7681" />
-                    <Label text="No files found" styleClass="empty-state-label" />
-                    <Label text="Files from DM conversations will appear here, or drop files above to encrypt" styleClass="empty-state-sublabel" />
                 </VBox>
+            </HBox>
+
+            <!-- Vault Panel -->
+            <VBox spacing="16" styleClass="sf-panel" VBox.vgrow="ALWAYS">
+                <!-- Header Row -->
+                <HBox alignment="CENTER_LEFT" spacing="16">
+                    <Label text="Your Files" styleClass="sf-section-title"/>
+                    <Pane HBox.hgrow="ALWAYS"/>
+                    <TextField fx:id="searchField" promptText="Search..." prefWidth="220" styleClass="sf-search"/>
+                </HBox>
+
+                <!-- Filter Buttons -->
+                <HBox fx:id="categoryFilterBar" spacing="12" alignment="CENTER" styleClass="sf-filter-bar">
+                    <Button fx:id="filterAll" text="All" styleClass="sf-filter-btn"/>
+                    <Button fx:id="filterImages" styleClass="sf-filter-btn">
+                        <graphic>
+                            <FontIcon iconLiteral="fas-image" iconSize="14"/>
+                        </graphic>
+                        <text>Images</text>
+                    </Button>
+                    <Button fx:id="filterDocuments" styleClass="sf-filter-btn">
+                        <graphic>
+                            <FontIcon iconLiteral="fas-file-alt" iconSize="14"/>
+                        </graphic>
+                        <text>Docs</text>
+                    </Button>
+                    <Button fx:id="filterArchives" styleClass="sf-filter-btn">
+                        <graphic>
+                            <FontIcon iconLiteral="fas-file-archive" iconSize="14"/>
+                        </graphic>
+                        <text>Archives</text>
+                    </Button>
+                    <Button fx:id="filterEncrypted" styleClass="sf-filter-btn">
+                        <graphic>
+                            <FontIcon iconLiteral="fas-lock" iconSize="14"/>
+                        </graphic>
+                        <text>Encrypted</text>
+                    </Button>
+                </HBox>
+
+                <!-- Files Grid -->
+                <StackPane VBox.vgrow="ALWAYS" styleClass="sf-vault-area">
+                    <ScrollPane fx:id="vaultScrollPane" fitToWidth="true" styleClass="vault-scroll-pane">
+                        <FlowPane fx:id="filesGrid" hgap="16" vgap="16" styleClass="files-grid" alignment="CENTER"/>
+                    </ScrollPane>
+
+                    <VBox fx:id="emptyState" alignment="CENTER" spacing="12" styleClass="sf-empty-state">
+                        <FontIcon iconLiteral="fas-folder-open" iconSize="64"/>
+                        <Label text="No files yet" styleClass="sf-empty-title"/>
+                        <Label text="Drop files above or import from DM" styleClass="sf-empty-subtitle"/>
+                    </VBox>
+                </StackPane>
             </VBox>
         </VBox>
     </center>
 </BorderPane>
-

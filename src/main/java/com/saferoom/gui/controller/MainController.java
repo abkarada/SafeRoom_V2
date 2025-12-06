@@ -16,7 +16,7 @@ import com.saferoom.gui.utils.AlertUtils;
 import com.saferoom.gui.utils.MacOSFullscreenHandler;
 import com.saferoom.gui.utils.UserSession;
 import com.saferoom.gui.utils.WindowStateManager;
-import com.saferoom.webrtc.CallManager;
+// CallManager import REMOVED - use reflection to prevent WebRTC loading at startup
 
 import javafx.application.Platform;
 import javafx.fxml.FXML;
@@ -165,22 +165,14 @@ public class MainController {
             userAvatar.setText(getCurrentUserInitials());
         }
 
-        // Initialize WebRTC
+        // ⚡ LAZY LOADING: WebRTC/CallManager artık burada başlatılmıyor!
+        // RAM optimizasyonu: WebRTC sadece arama yapılınca/alınınca yüklenecek
+        // ⚡ LAZY LOADING: CallManager NOT initialized at startup
+        // This prevents loading WebRTC native library (~200-300 MB on Windows)
+        // CallManager will auto-initialize when first call is made
         String currentUsername = UserSession.getInstance().getDisplayName();
         if (currentUsername != null && !currentUsername.equals("Username")) {
-            System.out.printf("[MainController] 🎬 Initializing CallManager for user: %s%n", currentUsername);
-            try {
-                CallManager callManager = CallManager.getInstance();
-                callManager.initialize(currentUsername);
-                setupGlobalCallCallbacks(callManager);
-                System.out.println("[MainController] ✅ CallManager initialized - ready to receive calls");
-            } catch (Exception e) {
-                System.err.printf("[MainController] ❌ Failed to initialize CallManager: %s%n", e.getMessage());
-                e.printStackTrace();
-            }
-        }
-
-        if (currentUsername != null && !currentUsername.equals("Username")) {
+            System.out.println("[MainController] ⚡ CallManager DISABLED at startup (will load on first call)");
             System.out.println("📝 P2P registration disabled - using server relay only");
         }
 
@@ -700,47 +692,6 @@ public class MainController {
         }
     }
 
-    private void setupGlobalCallCallbacks(CallManager callManager) {
-        System.out.println("[MainController] 📞 Setting up global incoming call handler");
-        callManager.setOnIncomingCallCallback(callInfo -> {
-            Platform.runLater(() -> {
-                try {
-                    IncomingCallDialog dialog = new IncomingCallDialog(
-                            callInfo.callerUsername, callInfo.callId, callInfo.videoEnabled
-                    );
-                    CompletableFuture<Boolean> dialogResult = dialog.show();
-                    dialogResult.thenAccept(accepted -> {
-                        if (accepted) {
-                            dialog.close();
-                            callManager.acceptCall(callInfo.callId);
-                            Platform.runLater(() -> {
-                                currentActiveCallDialog = new ActiveCallDialog(
-                                        callInfo.callerUsername, callInfo.callId, callInfo.videoEnabled, callManager
-                                );
-                                currentActiveCallDialog.show();
-                                if (callInfo.videoEnabled) {
-                                    dev.onvoid.webrtc.media.video.VideoTrack localVideo = callManager.getLocalVideoTrack();
-                                    if (localVideo != null) {
-                                        currentActiveCallDialog.attachLocalVideo(localVideo);
-                                    }
-                                }
-                            });
-                        } else {
-                            callManager.rejectCall(callInfo.callId);
-                        }
-                    });
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            });
-        });
-        callManager.setOnCallEndedCallback(callId -> {
-            Platform.runLater(() -> {
-                if (currentActiveCallDialog != null) {
-                    currentActiveCallDialog.close();
-                    currentActiveCallDialog = null;
-                }
-            });
-        });
-    }
+    // ⚡ CallManager methods REMOVED to prevent WebRTC loading at startup
+    // Call functionality will be handled by ChatViewController when user initiates a call
 }
