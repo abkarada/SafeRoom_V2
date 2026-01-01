@@ -1,30 +1,38 @@
 package com.saferoom.webrtc.pipeline;
 
-import dev.onvoid.webrtc.media.video.I420Buffer;
 import dev.onvoid.webrtc.media.video.VideoFrame;
+import org.jctools.queues.SpscArrayQueue;
 
 import java.time.Duration;
 import java.util.Objects;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 
 /**
- * Virtual-thread based frame processor. Each instance owns a dedicated virtual thread that
- * performs decode → convert steps off the JavaFX thread and pushes paint-ready frames to a consumer.
+ * High-performance video frame processor using lock-free SPSC queue.
+ * 
+ * <h2>Performance Optimizations</h2>
+ * <ul>
+ * <li><b>JCTools SpscArrayQueue:</b> Lock-free, cache-optimized, 2-10x faster
+ * than ArrayBlockingQueue</li>
+ * <li><b>Single producer/consumer:</b> WebRTC video sink → processor
+ * thread</li>
+ * <li><b>Spin-wait with backoff:</b> Low latency polling without blocking</li>
+ * </ul>
  */
 public final class FrameProcessor implements AutoCloseable {
 
     private static final String QUEUE_CAPACITY_PROPERTY = "saferoom.video.queue.capacity";
-    private static final int DEFAULT_QUEUE_CAPACITY =
-        Integer.getInteger(QUEUE_CAPACITY_PROPERTY, 12);
-    private static final Duration POLL_TIMEOUT = Duration.ofMillis(50);
+    private static final int DEFAULT_QUEUE_CAPACITY = Integer.getInteger(QUEUE_CAPACITY_PROPERTY, 30); // 1 second
+                                                                                                       // buffer at
+                                                                                                       // 30fps
+    private static final long POLL_SPIN_NANOS = 1_000_000; // 1ms spin before park
     private static final long STALL_THRESHOLD_NANOS = Duration.ofSeconds(2).toNanos();
     private static final long STALL_LOG_INTERVAL_NANOS = Duration.ofSeconds(5).toNanos();
 
-    private final BlockingQueue<VideoFrame> queue;
+    // Lock-free SPSC queue (JCTools)
+    private final SpscArrayQueue<VideoFrame> queue;
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final AtomicBoolean paused = new AtomicBoolean(false);
     private final Consumer<FrameRenderResult> consumer;
@@ -38,20 +46,25 @@ public final class FrameProcessor implements AutoCloseable {
     public FrameProcessor(Consumer<FrameRenderResult> consumer, int capacity) {
         this.consumer = Objects.requireNonNull(consumer, "consumer");
         int resolvedCapacity = capacity > 0 ? capacity : DEFAULT_QUEUE_CAPACITY;
-        this.queue = new ArrayBlockingQueue<>(Math.max(1, resolvedCapacity));
-        
-        // ALWAYS use platform thread for FrameProcessor
-        // Virtual threads can have issues with native code (webrtc I420Buffer operations)
-        // This affects BOTH Windows and Linux
+        // SpscArrayQueue requires power-of-2 capacity for optimal performance
+        int powerOf2Capacity = Integer.highestOneBit(resolvedCapacity - 1) << 1;
+        this.queue = new SpscArrayQueue<>(Math.max(2, powerOf2Capacity));
+
+        // Platform thread for native WebRTC interop
         this.workerThread = Thread.ofPlatform()
-            .name("frame-processor-" + System.identityHashCode(this))
-            .daemon(true)
-            .unstarted(this::processLoop);
-        System.out.println("[FrameProcessor] Using platform thread for native interop");
-        
+                .name("frame-processor-" + System.identityHashCode(this))
+                .daemon(true)
+                .unstarted(this::processLoop);
+        System.out.println(
+                "[FrameProcessor] Using JCTools SpscArrayQueue (lock-free, capacity=" + powerOf2Capacity + ")");
+
         this.workerThread.start();
     }
 
+    /**
+     * Submit a video frame to the processing queue.
+     * Lock-free, non-blocking operation.
+     */
     public void submit(VideoFrame frame) {
         if (!running.get() || frame == null) {
             return;
@@ -60,56 +73,71 @@ public final class FrameProcessor implements AutoCloseable {
             return;
         }
         frame.retain();
-        while (!queue.offer(frame)) {
+
+        // Try to offer; if full, drop oldest frame and retry
+        if (!queue.offer(frame)) {
             stats.recordDrop();
             VideoFrame dropped = queue.poll();
-            if (dropped == null) {
-                break;
+            if (dropped != null) {
+                dropped.release();
             }
-            dropped.release();
+            // Retry after making room
+            if (!queue.offer(frame)) {
+                frame.release(); // Still can't add, release this one too
+            }
         }
     }
 
-    // Debug counter
+    // Debug counters
     private volatile long processedCount = 0;
     private volatile long lastProcessedLog = 0;
-    
+
     private void processLoop() {
-        System.out.println("[FrameProcessor] Process loop started on thread: " + Thread.currentThread().getName());
-        
+        System.out.println(
+                "[FrameProcessor] Process loop started (JCTools SPSC) on: " + Thread.currentThread().getName());
+
+        long emptySpinCount = 0;
+
         while (running.get()) {
             try {
-                VideoFrame frame = queue.poll(POLL_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+                VideoFrame frame = queue.poll();
+
                 if (frame == null) {
-                    logIfStalled();
+                    // Queue empty - spin briefly, then park
+                    emptySpinCount++;
+                    if (emptySpinCount > 100) {
+                        // After 100 empty polls, park for 1ms to save CPU
+                        LockSupport.parkNanos(POLL_SPIN_NANOS);
+                        logIfStalled();
+                    }
                     continue;
                 }
+
+                emptySpinCount = 0; // Reset spin counter on successful poll
+
                 if (paused.get()) {
                     frame.release();
                     continue;
                 }
+
                 try {
                     long start = System.nanoTime();
                     FrameRenderResult result = convertFrame(frame);
                     long processingTimeMs = (System.nanoTime() - start) / 1_000_000;
                     stats.recordProcessed(System.nanoTime() - start, queue.size());
-                    
+
                     // Log processing stats every 100 frames
                     processedCount++;
                     if (processedCount - lastProcessedLog >= 100) {
                         System.out.printf("[FrameProcessor] Processed %d frames (last took %dms, queue=%d)%n",
-                            processedCount, processingTimeMs, queue.size());
+                                processedCount, processingTimeMs, queue.size());
                         lastProcessedLog = processedCount;
                     }
-                    
+
                     consumer.accept(result);
                 } finally {
                     frame.release();
                 }
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                System.out.println("[FrameProcessor] Process loop interrupted");
-                break;
             } catch (Throwable t) {
                 System.err.println("[FrameProcessor] ERROR in processLoop: " + t.getMessage());
                 t.printStackTrace();
@@ -131,7 +159,7 @@ public final class FrameProcessor implements AutoCloseable {
     }
 
     private FrameRenderResult convertFrame(VideoFrame frame) {
-        I420Buffer buffer = frame.buffer.toI420();
+        var buffer = frame.buffer.toI420();
         try {
             return FrameRenderResult.fromI420(buffer, frame.timestampNs);
         } finally {
@@ -161,4 +189,3 @@ public final class FrameProcessor implements AutoCloseable {
         paused.set(false);
     }
 }
-

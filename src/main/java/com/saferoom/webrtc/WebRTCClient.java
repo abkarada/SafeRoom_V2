@@ -83,6 +83,11 @@ public class WebRTCClient {
     // Track RTP senders for replaceTrack operations
     private RTCRtpSender videoSender = null;
 
+    // Pre-warmed video track for fast answerer setup (Mac fix)
+    private VideoTrack preWarmedVideoTrack = null;
+    private dev.onvoid.webrtc.media.video.VideoDeviceSource preWarmedVideoSource = null;
+    private volatile boolean videoPreWarmed = false;
+
     // Callbacks
     private Consumer<RTCIceCandidate> onIceCandidateCallback;
     private Consumer<String> onLocalSDPCallback;
@@ -1084,6 +1089,38 @@ public class WebRTCClient {
 
         return CompletableFuture.runAsync(() -> {
             try {
+                // ═══════════════════════════════════════════════════════════════
+                // MAC FIX: Use pre-warmed track if available (instant!)
+                // ═══════════════════════════════════════════════════════════════
+                if (videoPreWarmed && preWarmedVideoTrack != null) {
+                    logger.info("🚀 Using PRE-WARMED video track (instant, no timeout risk)");
+
+                    // Transfer pre-warmed resources to main fields
+                    this.videoSource = preWarmedVideoSource;
+                    VideoTrack videoTrack = preWarmedVideoTrack;
+
+                    // Clear pre-warm state
+                    preWarmedVideoTrack = null;
+                    preWarmedVideoSource = null;
+                    videoPreWarmed = false;
+
+                    // Add pre-warmed track to peer connection
+                    pcLock.lock();
+                    try {
+                        videoSender = peerConnection.addTrack(videoTrack, List.of("stream1"));
+                        applyVideoCodecPreferences();
+                    } finally {
+                        pcLock.unlock();
+                    }
+
+                    logger.info("✅ Pre-warmed video track added instantly (640x480)!");
+                    this.localVideoTrack = videoTrack;
+                    return;
+                }
+
+                // ═══════════════════════════════════════════════════════════════
+                // Normal path: Create new video track (slower, used for offerer)
+                // ═══════════════════════════════════════════════════════════════
                 logger.info("Adding video track with optimized settings...");
 
                 // ===== FIX: Cleanup existing video source first (MacOS freeze fix) =====
@@ -1128,6 +1165,47 @@ public class WebRTCClient {
                 throw new RuntimeException(e);
             }
         }, webrtcExecutor);
+    }
+
+    /**
+     * Pre-warm video track for fast answerer setup (Mac freeze fix).
+     * Called when user clicks Accept, runs in parallel with CALL_ACCEPT signaling.
+     * By the time OFFER arrives, camera is already initialized at 640x480.
+     */
+    public CompletableFuture<Void> preWarmVideoTrack() {
+        if (videoPreWarmed) {
+            logger.info("🔥 Video track already pre-warmed");
+            return CompletableFuture.completedFuture(null);
+        }
+
+        return CompletableFuture.runAsync(() -> {
+            try {
+                logger.info("🔥 Pre-warming video track (parallel with CALL_ACCEPT)...");
+
+                // Create camera track at full resolution
+                CameraCaptureService.CameraCaptureResource resource = CameraCaptureService.createCameraTrack("video0");
+
+                preWarmedVideoSource = resource.getSource();
+                preWarmedVideoTrack = resource.getTrack();
+
+                // Start capture to fully initialize VideoToolbox
+                resource.startCapture();
+
+                videoPreWarmed = true;
+                logger.info("✅ Video track pre-warmed at 640x480 - ready for instant use!");
+
+            } catch (Exception e) {
+                logger.warn("Pre-warm failed, will use normal path: " + e.getMessage());
+                videoPreWarmed = false;
+            }
+        }, webrtcExecutor);
+    }
+
+    /**
+     * Check if a pre-warmed video track is available
+     */
+    public boolean hasPreWarmedVideoTrack() {
+        return videoPreWarmed && preWarmedVideoTrack != null;
     }
 
     /**

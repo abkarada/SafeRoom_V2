@@ -144,6 +144,9 @@ dependencies {
     implementation files('libs/slf4j-api-1.7.36.jar')
     implementation files('libs/slf4j-simple-1.7.36.jar')
     
+    // High-performance concurrent queues (lock-free SPSC for video frames)
+    implementation 'org.jctools:jctools-core:4.0.3'
+    
     // WebRTC - Common API (no natives)
     implementation "dev.onvoid.webrtc:webrtc-java:${versions.webrtc}"
     
