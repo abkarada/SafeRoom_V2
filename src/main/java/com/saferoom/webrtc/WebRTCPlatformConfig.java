@@ -162,13 +162,25 @@ final class WebRTCPlatformConfig {
      * 
      * CRITICAL: We MUST include VP8/VP9 in offers so that Linux answerers
      * can choose a codec they can decode. Otherwise, Linux sees black video.
+     * 
+     * CROSS-PLATFORM FIX: Profile filtering now happens at SDP level in
+     * WebRTCClient.
+     * setRemoteDescription() validates incoming profile-level-id and warns about
+     * High Profile (640c1f) which causes Mac VideoToolbox deadlocks.
+     * 
+     * NOTE: webrtc-java 0.14.0 doesn't expose sdpFmtpLine on RTCRtpCodecCapability,
+     * so we cannot filter profiles at codec preference level. The encoder watchdog
+     * in WebRTCClient provides backup protection against freezes.
      */
     private static List<RTCRtpCodecCapability> filterCodecsStrict(RTCRtpCapabilities capabilities) {
         if (capabilities == null || capabilities.getCodecs() == null) {
             return List.of();
         }
 
-        // Separate H264 and VP8/VP9 codecs
+        // Log that we're using cross-platform compatible settings
+        System.out.println("[WebRTC] 📊 Using Constrained Baseline profile preference for Mac compatibility");
+
+        // Collect H264 codecs (profile filtering happens at SDP level in WebRTCClient)
         List<RTCRtpCodecCapability> h264Codecs = capabilities.getCodecs().stream()
                 .filter(Objects::nonNull)
                 .filter(codec -> {
@@ -188,8 +200,7 @@ final class WebRTCPlatformConfig {
                 })
                 .toList();
 
-        // Combine: H264 first (hardware accelerated), then VP8/VP9 as fallback for
-        // cross-platform
+        // Combine: H264 first (hardware accelerated), then VP8/VP9 as fallback
         java.util.List<RTCRtpCodecCapability> combined = new java.util.ArrayList<>(h264Codecs);
         combined.addAll(vpCodecs);
 

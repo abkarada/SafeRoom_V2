@@ -88,6 +88,19 @@ public class WebRTCClient {
     private dev.onvoid.webrtc.media.video.VideoDeviceSource preWarmedVideoSource = null;
     private volatile boolean videoPreWarmed = false;
 
+    // FIX: Deferred Mac capture start flag for Answerer role
+    // Capture must start AFTER setLocalDescription to ensure encoder gets correct
+    // profile
+    private volatile boolean pendingMacCaptureStart = false;
+
+    // Encoder watchdog for detecting VideoToolbox freezes
+    private volatile long lastEncodedFrameTime = 0;
+    private volatile long captureFrameCount = 0;
+    private volatile boolean encoderWatchdogActive = false;
+    private volatile int softResetCount = 0;
+    private static final long ENCODER_FREEZE_THRESHOLD_MS = 2000; // 2 seconds
+    private static final int MAX_SOFT_RESETS = 3; // Escalate to hard reset after 3 failures
+
     // Callbacks
     private Consumer<RTCIceCandidate> onIceCandidateCallback;
     private Consumer<String> onLocalSDPCallback;
@@ -777,6 +790,23 @@ public class WebRTCClient {
                             // Log video codec info from SDP
                             logSdpVideoCodecs(optimizedSdp, "ANSWER");
 
+                            // ═══════════════════════════════════════════════════════════════
+                            // FIX: NOW start Mac capture (after setLocalDescription with Answer)
+                            // The encoder will initialize with the correct 42e01f profile
+                            // that was negotiated in the Answer SDP.
+                            // ═══════════════════════════════════════════════════════════════
+                            if (IS_MAC && pendingMacCaptureStart && videoSource != null) {
+                                try {
+                                    logger.info("MAC ANSWERER: NOW starting capture (profile locked to Answer SDP)");
+                                    videoSource.start();
+                                    pendingMacCaptureStart = false;
+                                    logger.info("MAC ANSWERER: Camera capture started with correct 42e01f profile");
+                                    startEncoderWatchdog();
+                                } catch (Exception e) {
+                                    logger.error("Failed to start Mac answerer capture: " + e.getMessage(), e);
+                                }
+                            }
+
                             if (onLocalSDPCallback != null) {
                                 onLocalSDPCallback.accept(optimizedSdp);
                             }
@@ -852,6 +882,11 @@ public class WebRTCClient {
 
     /**
      * Set remote SDP (offer or answer)
+     * 
+     * MASTERPIECE FIX: This method now implements the JIT encoder pattern:
+     * 1. Analyze incoming SDP for video codec profiles (strategic logging)
+     * 2. On Mac, munge dangerous profiles to safe Constrained Baseline
+     * 3. Set the description, then activate watchdog protection
      */
     public void setRemoteDescription(String sdpType, String sdp) {
         logger.info(String.format("Setting remote %s", sdpType));
@@ -861,17 +896,57 @@ public class WebRTCClient {
             return;
         }
 
+        // ═══════════════════════════════════════════════════════════════════
+        // PHASE 1: VIDEO CODEC ANALYSIS (Strategic Logging)
+        // ═══════════════════════════════════════════════════════════════════
+        SDPUtils.logVideoCodecAnalysis(sdp, "REMOTE " + sdpType.toUpperCase());
+
+        String remoteProfile = extractH264ProfileFromSdp(sdp);
+        // STRICT: Only 42e01f is safe for Mac VideoToolbox (42001f also causes freeze!)
+        boolean profileIsDangerous = remoteProfile != null && !remoteProfile.equalsIgnoreCase("42e01f");
+
+        if (profileIsDangerous) {
+            if (IS_MAC) {
+                logger.warn(
+                        String.format("DANGEROUS PROFILE DETECTED: %s (requires munging to 42e01f)", remoteProfile));
+                logger.warn("   VideoToolbox requires strict Constrained Baseline. Applying SDP munging...");
+            } else {
+                logger.info(String.format("Non-Baseline profile detected: %s (safe on %s)",
+                        remoteProfile, IS_WINDOWS ? "Windows" : "Linux"));
+            }
+        } else if (remoteProfile != null) {
+            logger.info(String.format("Safe profile detected: %s", remoteProfile));
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // PHASE 2: SDP MUNGING (The Gatekeeper) - MAC ONLY
+        // ═══════════════════════════════════════════════════════════════════
+        String safeSdp = sdp;
+        if (IS_MAC && profileIsDangerous) {
+            safeSdp = SDPUtils.enforceBaselineH264Profile(sdp);
+            logger.info("🔒 SDP munged to Constrained Baseline for Mac safety");
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // PHASE 3: SET REMOTE DESCRIPTION
+        // ═══════════════════════════════════════════════════════════════════
         try {
             RTCSdpType type = sdpType.equalsIgnoreCase("offer") ? RTCSdpType.OFFER : RTCSdpType.ANSWER;
-            RTCSessionDescription description = new RTCSessionDescription(type, sdp);
-
-            // Log remote SDP video codecs
-            logSdpVideoCodecs(sdp, "REMOTE " + sdpType.toUpperCase());
+            RTCSessionDescription description = new RTCSessionDescription(type, safeSdp);
 
             peerConnection.setRemoteDescription(description, new SetSessionDescriptionObserver() {
                 @Override
                 public void onSuccess() {
-                    logger.info("Remote description set");
+                    logger.info("✅ Remote description set successfully");
+
+                    // ═══════════════════════════════════════════════════════════════
+                    // PHASE 4: ACTIVATE WATCHDOG (Mac protection)
+                    // Now that remote description is set, the encoder is active.
+                    // Start watchdog to monitor for hardware freeze.
+                    // ═══════════════════════════════════════════════════════════════
+                    if (IS_MAC && videoEnabled) {
+                        startEncoderWatchdog();
+                    }
                 }
 
                 @Override
@@ -909,6 +984,12 @@ public class WebRTCClient {
      */
     public void close() {
         logger.info("Closing peer connection...");
+
+        // Stop encoder watchdog first
+        stopEncoderWatchdog();
+
+        // Reset Mac capture flag
+        pendingMacCaptureStart = false;
 
         // Clean up all audio sinks first (properly remove from tracks)
         cleanupAllAudioSinks();
@@ -1079,6 +1160,48 @@ public class WebRTCClient {
     private final java.util.concurrent.locks.ReentrantLock pcLock = new java.util.concurrent.locks.ReentrantLock();
 
     /**
+     * ═══════════════════════════════════════════════════════════════════
+     * ANSWERER BINDING FIX: Find existing video sender from transceiver
+     * ═══════════════════════════════════════════════════════════════════
+     * 
+     * When we're the Answerer, setRemoteDescription(OFFER) creates a video
+     * transceiver with an empty sender. We must use replaceTrack() on this
+     * existing sender instead of addTrack() (which would create a second sender).
+     * 
+     * @return Existing video sender to bind to, or null if none found
+     */
+    private RTCRtpSender findExistingVideoSender() {
+        if (peerConnection == null)
+            return null;
+
+        RTCRtpTransceiver[] transceivers = peerConnection.getTransceivers();
+        if (transceivers == null)
+            return null;
+
+        for (RTCRtpTransceiver transceiver : transceivers) {
+            if (transceiver == null)
+                continue;
+            RTCRtpSender sender = transceiver.getSender();
+            if (sender == null)
+                continue;
+
+            // Check if this sender has no track (empty slot from offer)
+            MediaStreamTrack senderTrack = sender.getTrack();
+            if (senderTrack == null) {
+                // Verify it's a video transceiver by checking receiver
+                if (transceiver.getReceiver() != null) {
+                    MediaStreamTrack rcvTrack = transceiver.getReceiver().getTrack();
+                    if (rcvTrack != null && "video".equalsIgnoreCase(rcvTrack.getKind())) {
+                        logger.debug("🔍 Found empty video sender from transceiver (Answerer binding)");
+                        return sender;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
      * Add video track to peer connection
      */
     public CompletableFuture<Void> addVideoTrack() {
@@ -1093,27 +1216,72 @@ public class WebRTCClient {
                 // MAC FIX: Use pre-warmed track if available (instant!)
                 // ═══════════════════════════════════════════════════════════════
                 if (videoPreWarmed && preWarmedVideoTrack != null) {
-                    logger.info("🚀 Using PRE-WARMED video track (instant, no timeout risk)");
+                    logger.info("Using PRE-WARMED video track (instant, no timeout risk)");
 
                     // Transfer pre-warmed resources to main fields
                     this.videoSource = preWarmedVideoSource;
                     VideoTrack videoTrack = preWarmedVideoTrack;
+
+                    // ═══════════════════════════════════════════════════════════════
+                    // MAC JIT: NOW start capture (after setRemoteDescription validated profile)
+                    // ═══════════════════════════════════════════════════════════════
+                    if (IS_MAC && this.videoSource != null) {
+                        // ═══════════════════════════════════════════════════════════════
+                        // FIX: For Mac ANSWERER, defer capture start until AFTER setLocalDescription
+                        // This ensures VideoToolbox encoder initializes with the correct 42e01f
+                        // profile from the negotiated Answer SDP, preventing freeze.
+                        // ═══════════════════════════════════════════════════════════════
+                        RTCRtpSender existingSender = findExistingVideoSender();
+                        boolean isAnswererRole = (existingSender != null);
+
+                        if (isAnswererRole) {
+                            // ANSWERER: Defer capture until after setLocalDescription
+                            logger.info("MAC ANSWERER: Deferring capture until after Answer SDP is set");
+                            logger.info("   Encoder will initialize with negotiated 42e01f profile");
+                            pendingMacCaptureStart = true;
+                            // Capture will be triggered by createAnswerInternal after setLocalDescription
+                        } else {
+                            // OFFERER: Start capture now (profile already set by createOffer)
+                            try {
+                                logger.info("MAC OFFERER: Starting capture now");
+                                this.videoSource.start();
+                                logger.info("MAC: Camera capture started (OFFERER mode)");
+                                startEncoderWatchdog();
+                            } catch (Exception e) {
+                                logger.error("Failed to start Mac camera capture: " + e.getMessage(), e);
+                                throw new RuntimeException("Mac camera JIT start failed", e);
+                            }
+                        }
+                    }
 
                     // Clear pre-warm state
                     preWarmedVideoTrack = null;
                     preWarmedVideoSource = null;
                     videoPreWarmed = false;
 
-                    // Add pre-warmed track to peer connection
+                    // ═══════════════════════════════════════════════════════════════
+                    // ANSWERER BINDING FIX: Use replaceTrack if transceiver exists
+                    // ═══════════════════════════════════════════════════════════════
                     pcLock.lock();
                     try {
-                        videoSender = peerConnection.addTrack(videoTrack, List.of("stream1"));
+                        RTCRtpSender existingSender = findExistingVideoSender();
+                        if (existingSender != null) {
+                            // Answerer flow: bind to transceiver created by offer
+                            logger.info("TRANSCEIVER BINDING: REPLACETRACK on existing sender (pre-warmed path)");
+                            existingSender.replaceTrack(videoTrack);
+                            videoSender = existingSender;
+                            logger.info("Pre-warmed track bound to negotiated transceiver (640x480)");
+                        } else {
+                            // Offerer flow: create new sender
+                            logger.info("OFFERER MODE: Creating new video sender (pre-warmed path)");
+                            videoSender = peerConnection.addTrack(videoTrack, List.of("stream1"));
+                            logger.info("Pre-warmed video track added (640x480)");
+                        }
                         applyVideoCodecPreferences();
                     } finally {
                         pcLock.unlock();
                     }
 
-                    logger.info("✅ Pre-warmed video track added instantly (640x480)!");
                     this.localVideoTrack = videoTrack;
                     return;
                 }
@@ -1141,11 +1309,27 @@ public class WebRTCClient {
                 this.videoSource = resource.getSource();
                 VideoTrack videoTrack = resource.getTrack();
 
-                // Add track to peer connection with stream ID ve sender referansı
-                // 🔒 FIX: Use ReentrantLock instead of synchronized(this) to avoid VT pinning
+                // ═══════════════════════════════════════════════════════════════
+                // ANSWERER BINDING FIX: Use replaceTrack if transceiver exists
+                // When Answerer, the remote Offer creates a transceiver with empty sender.
+                // We MUST use replaceTrack() to bind our track to it, NOT addTrack()
+                // which would create a second sender (leaving offerer on dummy 320x240).
+                // ═══════════════════════════════════════════════════════════════
                 pcLock.lock();
                 try {
-                    videoSender = peerConnection.addTrack(videoTrack, List.of("stream1"));
+                    RTCRtpSender existingSender = findExistingVideoSender();
+                    if (existingSender != null) {
+                        // Answerer flow: bind to transceiver created by offer
+                        logger.info("TRANSCEIVER BINDING: REPLACETRACK on existing sender (normal path)");
+                        existingSender.replaceTrack(videoTrack);
+                        videoSender = existingSender;
+                        logger.info("Video track bound to negotiated transceiver (640x480)");
+                    } else {
+                        // Offerer flow: create new sender
+                        logger.info("OFFERER MODE: Creating new video sender (normal path)");
+                        videoSender = peerConnection.addTrack(videoTrack, List.of("stream1"));
+                        logger.info("Video track added with new sender (640x480)");
+                    }
                     applyVideoCodecPreferences();
                 } finally {
                     pcLock.unlock();
@@ -1154,8 +1338,14 @@ public class WebRTCClient {
                 // FIX: Explicitly start capture AFTER adding track
                 resource.startCapture();
 
-                logger.info("✅ Video track added with optimized settings (Res: 640x480, FPS: 30)");
-                logger.info("🎥 GPU acceleration enabled (VideoToolbox on Mac)!");
+                logger.info("Video track added with optimized settings (Res: 640x480, FPS: 30)");
+                if (IS_MAC) {
+                    logger.info("GPU acceleration enabled (VideoToolbox)");
+                } else if (IS_WINDOWS) {
+                    logger.info("GPU acceleration available (DXVA/MediaFoundation)");
+                } else {
+                    logger.info("Video track ready");
+                }
 
                 // Store reference for cleanup
                 this.localVideoTrack = videoTrack;
@@ -1168,31 +1358,73 @@ public class WebRTCClient {
     }
 
     /**
-     * Pre-warm video track for fast answerer setup (Mac freeze fix).
+     * Pre-warm video track for fast answerer setup.
+     * 
+     * ═══════════════════════════════════════════════════════════════════
+     * MASTERPIECE: JIT (Just-In-Time) Initialization
+     * ═══════════════════════════════════════════════════════════════════
+     * 
+     * ON MAC: We ONLY initialize the camera sensor (AVFoundation) but do NOT
+     * start capture. The actual encoder (VideoToolbox) is initialized AFTER
+     * we receive the remote SDP and can verify the profile is compatible.
+     * This prevents the "handshake paradox" where we lock in a profile before
+     * knowing what the peer expects.
+     * 
+     * ON WINDOWS/LINUX: Full initialization is safe - these platforms have
+     * more resilient encoder reconfiguration.
+     * 
      * Called when user clicks Accept, runs in parallel with CALL_ACCEPT signaling.
-     * By the time OFFER arrives, camera is already initialized at 640x480.
      */
     public CompletableFuture<Void> preWarmVideoTrack() {
         if (videoPreWarmed) {
-            logger.info("🔥 Video track already pre-warmed");
+            logger.info("Video track already pre-warmed");
             return CompletableFuture.completedFuture(null);
         }
 
         return CompletableFuture.runAsync(() -> {
             try {
-                logger.info("🔥 Pre-warming video track (parallel with CALL_ACCEPT)...");
+                logger.info("Pre-warming video track (parallel with CALL_ACCEPT)...");
 
-                // Create camera track at full resolution
-                CameraCaptureService.CameraCaptureResource resource = CameraCaptureService.createCameraTrack("video0");
+                if (IS_MAC) {
+                    // ═══════════════════════════════════════════════════════════════
+                    // MAC: DEFERRED INITIALIZATION (JIT Pattern)
+                    // Create camera source but DON'T start capture yet.
+                    // This keeps the lens "warm" without initializing VideoToolbox.
+                    // ═══════════════════════════════════════════════════════════════
+                    logger.info("IDENTIFIED PLATFORM: macOS - Deferred encoder initialization (JIT pattern)");
+                    logger.info("   Camera sensor will be initialized, encoder deferred until SDP validated");
 
-                preWarmedVideoSource = resource.getSource();
-                preWarmedVideoTrack = resource.getTrack();
+                    CameraCaptureService.CameraCaptureResource resource = CameraCaptureService
+                            .createCameraTrack("video0");
 
-                // Start capture to fully initialize VideoToolbox
-                resource.startCapture();
+                    preWarmedVideoSource = resource.getSource();
+                    preWarmedVideoTrack = resource.getTrack();
 
-                videoPreWarmed = true;
-                logger.info("✅ Video track pre-warmed at 640x480 - ready for instant use!");
+                    // DO NOT call resource.startCapture() on Mac!
+                    // The encoder (VideoToolbox) initializes when capture starts.
+                    // We defer this until addVideoTrack() is called, which happens
+                    // AFTER setRemoteDescription has validated and munged the profile.
+
+                    videoPreWarmed = true;
+                    logger.info("MAC: Video track structure ready (capture DEFERRED for safety)");
+
+                } else {
+                    // ═══════════════════════════════════════════════════════════════
+                    // WINDOWS/LINUX: FULL INITIALIZATION
+                    // These platforms have more resilient encoder initialization.
+                    // ═══════════════════════════════════════════════════════════════
+                    logger.info("IDENTIFIED PLATFORM: " + (IS_WINDOWS ? "Windows" : "Linux") + " - Full pre-warming");
+
+                    CameraCaptureService.CameraCaptureResource resource = CameraCaptureService
+                            .createCameraTrack("video0");
+
+                    preWarmedVideoSource = resource.getSource();
+                    preWarmedVideoTrack = resource.getTrack();
+                    resource.startCapture();
+
+                    videoPreWarmed = true;
+                    logger.info("Video track pre-warmed at 640x480 - ready for instant use");
+                }
 
             } catch (Exception e) {
                 logger.warn("Pre-warm failed, will use normal path: " + e.getMessage());
@@ -1623,6 +1855,242 @@ public class WebRTCClient {
         }
 
         logger.info("═══════════════════════════════════════════");
+    }
+
+    /**
+     * Extract H.264 profile-level-id from SDP.
+     * Returns the first profile found, or null if none.
+     */
+    private String extractH264ProfileFromSdp(String sdp) {
+        if (sdp == null)
+            return null;
+
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("profile-level-id=([0-9a-fA-F]{6})");
+        java.util.regex.Matcher matcher = pattern.matcher(sdp);
+        if (matcher.find()) {
+            return matcher.group(1).toLowerCase();
+        }
+        return null;
+    }
+
+    // ===============================
+    // Encoder Watchdog (Mac VideoToolbox freeze detection)
+    // ===============================
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════════════
+     * ENHANCED ENCODER WATCHDOG (Mac VideoToolbox Protection)
+     * ═══════════════════════════════════════════════════════════════════════════
+     * 
+     * Monitors for VideoToolbox deadlock by comparing capture frame count vs
+     * last encoded frame time. If frames are being captured but encoding has
+     * stopped for 2+ seconds, the encoder has frozen.
+     * 
+     * Recovery Strategy (Tiered):
+     * - Soft Reset: Stop → 150ms pause → Restart (up to 3 times)
+     * - Hard Reset: Full track teardown and rebuild (nuclear option)
+     */
+    private void startEncoderWatchdog() {
+        if (encoderWatchdogActive)
+            return;
+        encoderWatchdogActive = true;
+        lastEncodedFrameTime = System.currentTimeMillis();
+        softResetCount = 0;
+
+        Thread.ofVirtual().name("encoder-watchdog").start(() -> {
+            logger.info("╔═══════════════════════════════════════════════════════════════════╗");
+            logger.info("║ 🐕 ENCODER WATCHDOG ARMED (Mac VideoToolbox Protection)           ║");
+            logger.info(String.format("║   Freeze threshold: %dms | Max soft resets: %d                   ║",
+                    ENCODER_FREEZE_THRESHOLD_MS, MAX_SOFT_RESETS));
+            logger.info("╚═══════════════════════════════════════════════════════════════════╝");
+
+            // GRACE PERIOD: Wait for videoSource to become available (up to 15s)
+            // This prevents watchdog from dying during answerer handshake where
+            // setRemoteDescription is called BEFORE addVideoTrack
+            int gracePeriodMs = 0;
+            final int MAX_GRACE_PERIOD_MS = 15000; // 15 second max wait
+            while (encoderWatchdogActive && videoSource == null && gracePeriodMs < MAX_GRACE_PERIOD_MS) {
+                try {
+                    Thread.sleep(100);
+                    gracePeriodMs += 100;
+                } catch (InterruptedException e) {
+                    logger.info("🐕 Encoder Watchdog interrupted during grace period");
+                    return;
+                }
+            }
+
+            if (!encoderWatchdogActive) {
+                logger.info("🐕 Encoder Watchdog DISARMED during grace period");
+                return;
+            }
+
+            if (videoSource == null) {
+                logger.warn("🐕 Encoder Watchdog: videoSource still null after grace period, disarming");
+                return;
+            }
+
+            logger.debug("🐕 Watchdog grace period complete (waited " + gracePeriodMs + "ms), starting monitoring");
+
+            long lastCaptureCount = 0;
+
+            while (encoderWatchdogActive && videoSource != null) {
+                try {
+                    Thread.sleep(500); // Check every 500ms
+
+                    long currentCaptures = captureFrameCount;
+                    long now = System.currentTimeMillis();
+                    long timeSinceEncode = now - lastEncodedFrameTime;
+
+                    // Detect freeze: captures increasing but no encodes for 2+ seconds
+                    if (currentCaptures > lastCaptureCount + 10 &&
+                            timeSinceEncode > ENCODER_FREEZE_THRESHOLD_MS) {
+
+                        logger.error("═══════════════════════════════════════════════════════════════", null);
+                        logger.error("⚠️ ENCODER FREEZE DETECTED!", null);
+                        logger.error(String.format("   Captures: %d (+%d since last check)",
+                                currentCaptures, currentCaptures - lastCaptureCount), null);
+                        logger.error(String.format("   Last encode: %dms ago (threshold: %dms)",
+                                timeSinceEncode, ENCODER_FREEZE_THRESHOLD_MS), null);
+                        logger.error(String.format("   Soft reset count: %d/%d",
+                                softResetCount, MAX_SOFT_RESETS), null);
+                        logger.error("═══════════════════════════════════════════════════════════════", null);
+
+                        // Tiered recovery
+                        if (softResetCount < MAX_SOFT_RESETS) {
+                            handleEncoderFreezeSoft();
+                            softResetCount++;
+                            // Reset detection counters and continue monitoring
+                            lastCaptureCount = 0;
+                            captureFrameCount = 0;
+                        } else {
+                            logger.error("❌ Max soft resets exceeded. Escalating to HARD RESET!", null);
+                            handleEncoderFreezeHard();
+                            // Exit watchdog after hard reset - it will restart with new track
+                            break;
+                        }
+                    }
+
+                    lastCaptureCount = currentCaptures;
+
+                } catch (InterruptedException e) {
+                    break;
+                }
+            }
+            logger.info("🐕 Encoder Watchdog DISARMED");
+        });
+    }
+
+    /**
+     * SOFT RESET: Stop → Brief pause → Restart.
+     * Works for minor VideoToolbox hiccups.
+     */
+    private void handleEncoderFreezeSoft() {
+        logger.info("🔄 Attempting SOFT RESET (attempt " + (softResetCount + 1) + "/" + MAX_SOFT_RESETS + ")...");
+
+        try {
+            // 1. Stop current video source
+            if (videoSource != null) {
+                videoSource.stop();
+                logger.info("   ⏹️ Video source stopped");
+            }
+
+            // 2. Brief pause for VideoToolbox to release resources
+            Thread.sleep(150);
+
+            // 3. Restart video source
+            if (videoSource != null) {
+                videoSource.start();
+                logger.info("   ▶️ Video source restarted");
+            }
+
+            // 4. Reset timing counters
+            lastEncodedFrameTime = System.currentTimeMillis();
+            captureFrameCount = 0;
+
+            logger.info("✅ Soft reset complete - monitoring continues");
+
+        } catch (Exception e) {
+            logger.error("❌ Soft reset failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * HARD RESET: Full track teardown and rebuild.
+     * Nuclear option when soft resets fail.
+     */
+    private void handleEncoderFreezeHard() {
+        logger.info("🔧 Attempting HARD RESET (full track rebuild)...");
+
+        try {
+            // 1. Stop and dispose current source
+            if (videoSource != null) {
+                try {
+                    videoSource.stop();
+                    videoSource.dispose();
+                } catch (Exception e) {
+                    logger.warn("   ⚠️ Error disposing old source: " + e.getMessage());
+                }
+                videoSource = null;
+            }
+
+            // 2. Create fresh camera track
+            logger.info("   📹 Creating fresh camera track...");
+            CameraCaptureService.CameraCaptureResource resource = CameraCaptureService
+                    .createCameraTrack("video0_rebuilt");
+
+            videoSource = resource.getSource();
+            VideoTrack newTrack = resource.getTrack();
+
+            // 3. Start capture
+            resource.startCapture();
+            logger.info("   ▶️ New capture started");
+
+            // 4. Replace track in peer connection if possible
+            if (videoSender != null && peerConnection != null) {
+                try {
+                    videoSender.replaceTrack(newTrack);
+                    logger.info("   🔗 Track replaced in peer connection");
+                } catch (Exception e) {
+                    logger.warn("   ⚠️ Could not replace track: " + e.getMessage());
+                }
+            }
+
+            // 5. Reset all counters
+            lastEncodedFrameTime = System.currentTimeMillis();
+            captureFrameCount = 0;
+            softResetCount = 0;
+
+            // 6. Restart watchdog with fresh state
+            encoderWatchdogActive = false;
+            Thread.sleep(200);
+            startEncoderWatchdog();
+
+            logger.info("✅ HARD RESET complete - track rebuilt, watchdog restarted");
+
+        } catch (Exception e) {
+            logger.error("❌ HARD RESET failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Stop encoder watchdog (called during cleanup)
+     */
+    private void stopEncoderWatchdog() {
+        encoderWatchdogActive = false;
+    }
+
+    /**
+     * Notify watchdog of encoded frame (call from encoder callback)
+     */
+    void notifyEncodedFrame() {
+        lastEncodedFrameTime = System.currentTimeMillis();
+    }
+
+    /**
+     * Notify watchdog of captured frame (call from capture callback)
+     */
+    void notifyCapturedFrame() {
+        captureFrameCount++;
     }
 
     /**

@@ -71,18 +71,18 @@ def sqliteClassifier = isWindows ? 'windows-x86_64' :
 // ═══════════════════════════════════════════════════════════════════════════════
 
 println """
-╔═══════════════════════════════════════════════════════════════════════════════╗
-║                         SafeRoomV2 Build Configuration                        ║
-╠═══════════════════════════════════════════════════════════════════════════════╣
-║  Platform:      ${currentOs.familyName.padRight(58)}║
-║  Architecture:  ${osArch.padRight(58)}║
-║  WebRTC:        ${webrtcClassifier.padRight(58)}║
-║  SQLite:        ${sqliteClassifier.padRight(58)}║
-╠═══════════════════════════════════════════════════════════════════════════════╣
-║  Features:                                                                    ║
-║    • Screen Share:  ${(isWindows || isMacOS ? '✓ Enabled (native)' : '✗ Disabled (Linux)').padRight(55)}║
-║    • PDF Preview:   ✗ Disabled (opens with OS default app)                   ║
-╚═══════════════════════════════════════════════════════════════════════════════╝
+============================================================================
+                         SafeRoomV2 Build Configuration
+============================================================================
+  Platform:      ${currentOs.familyName.padRight(58)}
+  Architecture:  ${osArch.padRight(58)}
+  WebRTC:        ${webrtcClassifier.padRight(58)}
+  SQLite:        ${sqliteClassifier.padRight(58)}
+----------------------------------------------------------------------------
+  Features:
+    * Screen Share:  ${(isWindows || isMacOS ? '[OK] Enabled (native)' : '[--] Disabled (Linux)').padRight(45)}
+    * PDF Preview:   [--] Disabled (opens with OS default app)
+============================================================================
 """
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -158,6 +158,8 @@ dependencies {
     
     // Testing
     testImplementation "org.junit.jupiter:junit-jupiter:${versions.junit}"
+    testImplementation "org.mockito:mockito-core:5.8.0"
+    testImplementation "org.mockito:mockito-junit-jupiter:5.8.0"
     
     // ───────────────────────────────────────────────────────────────────────────
     // PLATFORM-SPECIFIC DEPENDENCIES
@@ -485,4 +487,41 @@ task cleanBuild {
     description = 'Clean build with dependency report'
     dependsOn 'clean', 'compileJava'
     finalizedBy 'showDeps'
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEST CONFIGURATION
+// Show individual test names and results in terminal
+// ═══════════════════════════════════════════════════════════════════════════════
+
+test {
+    useJUnitPlatform()
+    
+    testLogging {
+        events "passed", "skipped", "failed"
+        showExceptions true
+        showCauses true
+        showStackTraces true
+        exceptionFormat "full"
+        
+        // Show test names as they run
+        afterTest { desc, result ->
+            def status = result.resultType == org.gradle.api.tasks.testing.TestResult.ResultType.SUCCESS ? "PASSED" : 
+                         result.resultType == org.gradle.api.tasks.testing.TestResult.ResultType.SKIPPED ? "SKIPPED" : "FAILED"
+            println "  ${status}: ${desc.className} > ${desc.name}"
+        }
+        
+        // Summary at the end
+        afterSuite { desc, result ->
+            if (!desc.parent) {
+                println "\n========================================================="
+                println "TEST RESULTS: ${result.resultType}"
+                println "  Tests run: ${result.testCount}"
+                println "  Passed:    ${result.successfulTestCount}"
+                println "  Failed:    ${result.failedTestCount}"
+                println "  Skipped:   ${result.skippedTestCount}"
+                println "========================================================="
+            }
+        }
+    }
 }

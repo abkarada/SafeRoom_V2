@@ -74,6 +74,10 @@ public class CallManager {
     // ⚡ FAST P2P: Pre-generated offer to send immediately on accept
     private String preGeneratedOffer;
 
+    // 🔥 Pre-warm future: coordinate camera pre-warming with handleOffer
+    // FIX: Must await this before addVideoTrack to avoid race condition
+    private CompletableFuture<Void> preWarmFuture = null;
+
     /**
      * Run a task asynchronously on the CallManager's virtual thread executor.
      * Useful for offloading UI actions or long-running tasks.
@@ -331,8 +335,9 @@ public class CallManager {
         // By the time OFFER arrives, camera is ready at 640x480!
         // ═══════════════════════════════════════════════════════════════
         if (pendingVideoEnabled) {
-            logger.info("🔥 Pre-warming camera (parallel with CALL_ACCEPT)...");
-            webrtcClient.preWarmVideoTrack();
+            logger.info("Pre-warming camera (parallel with CALL_ACCEPT)...");
+            // FIX: Store future to await in handleOffer before addVideoTrack
+            preWarmFuture = webrtcClient.preWarmVideoTrack();
         }
 
         // Send CALL_ACCEPT (network round-trip starts)
@@ -664,7 +669,24 @@ public class CallManager {
                     // ═══════════════════════════════════════════════════════════════
 
                     if (!tracksAddedForIncomingCall) {
-                        logger.info("🎥 Adding media tracks AFTER remote offer (correct order)...");
+                        logger.info("Adding media tracks AFTER remote offer (correct order)...");
+
+                        // FIX: Wait for pre-warm to complete before addVideoTrack
+                        // This prevents the race condition where addVideoTrack creates
+                        // a second camera track because videoPreWarmed is still false
+                        if (preWarmFuture != null) {
+                            try {
+                                logger.info("Waiting for camera pre-warm to complete...");
+                                preWarmFuture.get(10, TimeUnit.SECONDS);
+                                logger.info("Pre-warm complete, proceeding with addVideoTrack");
+                            } catch (java.util.concurrent.TimeoutException e) {
+                                logger.warn("Pre-warm timed out after 10s, falling back to normal path");
+                            } catch (Exception e) {
+                                logger.warn("Pre-warm failed: " + e.getMessage() + ", falling back to normal path");
+                            } finally {
+                                preWarmFuture = null;
+                            }
+                        }
 
                         List<CompletableFuture<Void>> trackFutures = new ArrayList<>();
 
@@ -1018,6 +1040,7 @@ public class CallManager {
         this.pendingAudioEnabled = false;
         this.pendingVideoEnabled = false;
         this.tracksAddedForIncomingCall = false;
+        this.preWarmFuture = null; // Clear pre-warm future
 
         // Clear ICE buffer
         synchronized (pendingIceCandidates) {
