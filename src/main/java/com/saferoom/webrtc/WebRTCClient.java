@@ -1271,11 +1271,29 @@ public class WebRTCClient {
                             existingSender.replaceTrack(videoTrack);
                             videoSender = existingSender;
                             logger.info("Pre-warmed track bound to negotiated transceiver (640x480)");
+
+                            // ═══════════════════════════════════════════════════════════════
+                            // CRITICAL FIX: Start capture AFTER replaceTrack() for Answerer
+                            // This ensures RTP sender has the track bound before encoding starts.
+                            // Without this, the Offerer never receives the Answerer's video!
+                            // ═══════════════════════════════════════════════════════════════
+                            if (!IS_MAC && this.videoSource != null) {
+                                logger.info("ANSWERER: Starting camera capture AFTER replaceTrack (FIX)");
+                                this.videoSource.start();
+                                logger.info("✅ Camera capture started - Offerer should now receive video");
+                            }
                         } else {
-                            // Offerer flow: create new sender
+                            // Offerer flow: create new sender (capture starts later in normal addVideoTrack
+                            // path)
                             logger.info("OFFERER MODE: Creating new video sender (pre-warmed path)");
                             videoSender = peerConnection.addTrack(videoTrack, List.of("stream1"));
                             logger.info("Pre-warmed video track added (640x480)");
+
+                            // For Offerer using pre-warmed path, start capture now
+                            if (!IS_MAC && this.videoSource != null) {
+                                logger.info("OFFERER: Starting camera capture");
+                                this.videoSource.start();
+                            }
                         }
                         applyVideoCodecPreferences();
                     } finally {
@@ -1410,20 +1428,24 @@ public class WebRTCClient {
 
                 } else {
                     // ═══════════════════════════════════════════════════════════════
-                    // WINDOWS/LINUX: FULL INITIALIZATION
-                    // These platforms have more resilient encoder initialization.
+                    // WINDOWS/LINUX: DEFERRED CAPTURE (Fix for Answerer video bug)
+                    // Previously we started capture here, but this caused the RTP sender
+                    // to not encode frames properly because replaceTrack() hadn't been
+                    // called yet. Now we defer capture until AFTER replaceTrack().
                     // ═══════════════════════════════════════════════════════════════
-                    logger.info("IDENTIFIED PLATFORM: " + (IS_WINDOWS ? "Windows" : "Linux") + " - Full pre-warming");
+                    logger.info("IDENTIFIED PLATFORM: " + (IS_WINDOWS ? "Windows" : "Linux")
+                            + " - Deferred capture (Answerer fix)");
 
                     CameraCaptureService.CameraCaptureResource resource = CameraCaptureService
                             .createCameraTrack("video0");
 
                     preWarmedVideoSource = resource.getSource();
                     preWarmedVideoTrack = resource.getTrack();
-                    resource.startCapture();
+                    // DON'T start capture here! Defer until after replaceTrack() in addVideoTrack()
+                    // This fixes the bug where Answerer's video never reaches Offerer.
 
                     videoPreWarmed = true;
-                    logger.info("Video track pre-warmed at 640x480 - ready for instant use");
+                    logger.info("Video track structure ready (capture DEFERRED for Answerer binding)");
                 }
 
             } catch (Exception e) {
