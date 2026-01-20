@@ -71,13 +71,19 @@ public final class FrameProcessor implements AutoCloseable {
             return;
         }
         frame.retain();
-        while (!queue.offer(frame)) {
+        // Try to offer to queue; if full, drop oldest frame to make room
+        if (!queue.offer(frame)) {
             stats.recordDrop();
             VideoFrame dropped = queue.poll();
-            if (dropped == null) {
-                break;
+            if (dropped != null) {
+                dropped.release();
             }
-            dropped.release();
+            // Try once more after making room
+            if (!queue.offer(frame)) {
+                // Queue still full (race condition) - release the new frame to prevent leak
+                frame.release();
+                stats.recordDrop();
+            }
         }
     }
 
@@ -182,12 +188,25 @@ public final class FrameProcessor implements AutoCloseable {
 
     @Override
     public void close() {
-        running.set(false);
-        // workerThread.interrupt(); // REMOVED
-        if (workerFuture != null) {
-            workerFuture.cancel(true); // INTERRUPT via Future
+        if (!running.compareAndSet(true, false)) {
+            return; // Already closed
         }
+        System.out.println("[FrameProcessor] Closing...");
+
+        // Interrupt the worker thread
+        if (workerFuture != null) {
+            workerFuture.cancel(true);
+            // Wait briefly for worker to finish processing current frame
+            try {
+                workerFuture.get(100, TimeUnit.MILLISECONDS);
+            } catch (Exception ignored) {
+                // Timeout or interruption is expected
+            }
+        }
+
+        // Drain any remaining frames in the queue
         drainQueue();
+        System.out.println("[FrameProcessor] Closed, final processed count: " + processedCount);
     }
 
     public void pause() {

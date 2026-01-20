@@ -326,7 +326,15 @@ public class VideoPanel extends Canvas {
      */
     public void dispose() {
         detachVideoTrack();
+        // Unbind any property bindings to prevent memory leaks
+        widthProperty().unbind();
+        heightProperty().unbind();
+        // Clear cached image
         videoImage = null;
+        cachedImageWidth = -1;
+        cachedImageHeight = -1;
+        // Log buffer pool stats for debugging memory issues
+        System.out.println("[VideoPanel] dispose() - Buffer pool stats: " + FrameRenderResult.getBufferPoolStats());
     }
 
     public void pauseRendering() {

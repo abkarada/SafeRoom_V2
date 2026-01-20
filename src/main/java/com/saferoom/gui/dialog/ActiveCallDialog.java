@@ -667,17 +667,17 @@ public class ActiveCallDialog {
     }
 
     /**
-     * Detach all video tracks
+     * Detach all video tracks and dispose panels to prevent memory leaks
      */
     private void detachVideoTracks() {
         if (localVideoPanel != null) {
-            localVideoPanel.detachVideoTrack();
+            localVideoPanel.dispose();
         }
         if (remoteVideoPanel != null) {
-            remoteVideoPanel.detachVideoTrack();
+            remoteVideoPanel.dispose();
         }
         if (remoteScreenPanel != null) {
-            remoteScreenPanel.detachVideoTrack();
+            remoteScreenPanel.dispose();
         }
     }
 
@@ -755,7 +755,18 @@ public class ActiveCallDialog {
     public void close() {
         stopDurationTimer();
         detachVideoTracks(); // Clean up video resources
-        callManager.setOnRemoteTrackCallback(null);
+
+        // Clear all callbacks to prevent memory leaks from lambda references
+        if (callManager != null) {
+            callManager.setOnRemoteTrackCallback(null);
+            callManager.setOnLocalTracksReadyCallback(null);
+        }
+
+        // Null out panel references to help GC
+        localVideoPanel = null;
+        remoteVideoPanel = null;
+        remoteScreenPanel = null;
+
         if (stage.isShowing()) {
             stage.close();
         }

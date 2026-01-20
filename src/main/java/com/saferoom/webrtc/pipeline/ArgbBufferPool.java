@@ -36,15 +36,19 @@ final class ArgbBufferPool {
 
     /**
      * Soft limit per resolution to prevent infinite growth.
-     * 256 * 1.2MB (VGA) ~= 300MB per resolution.
-     * This is safe and far better than 15GB of churn.
+     * 8 buffers is enough for the pipeline depth:
+     * - 1 in FrameProcessor worker
+     * - 1 in VideoPanel latestFrame
+     * - 6 for burst/backpressure margin
+     * 8 * 1.2MB (VGA) = ~10MB per resolution - much safer than 300MB.
      */
-    private static final int DEFAULT_PER_RESOLUTION_LIMIT = 256;
+    private static final int DEFAULT_PER_RESOLUTION_LIMIT = 8;
 
     /**
      * Maximum total buffers across all resolutions to prevent global OOM.
+     * With 8 per resolution and typical usage of 1-2 resolutions, 32 is plenty.
      */
-    private static final int MAX_TOTAL_BUFFERS = 1024;
+    private static final int MAX_TOTAL_BUFFERS = 32;
 
     private final Map<Long, Queue<ByteBuffer>> pools = new ConcurrentHashMap<>();
     private final int perResolutionLimit;
@@ -167,5 +171,40 @@ final class ArgbBufferPool {
 
     private static long toKey(int width, int height) {
         return (((long) width) << 32) | (height & 0xFFFFFFFFL);
+    }
+
+    /**
+     * Clear all pooled buffers to free memory.
+     * Call this when video stream ends or resolution changes significantly.
+     */
+    public void clear() {
+        int totalCleared = 0;
+        for (Queue<ByteBuffer> queue : pools.values()) {
+            while (queue.poll() != null) {
+                totalCleared++;
+            }
+        }
+        pools.clear();
+        if (totalCleared > 0) {
+            System.out.printf("[ArgbBufferPool] Cleared %d buffers from pool%n", totalCleared);
+        }
+    }
+
+    /**
+     * Clear buffers for a specific resolution.
+     * Useful when resolution changes mid-stream.
+     */
+    public void clearResolution(int width, int height) {
+        long key = toKey(width, height);
+        Queue<ByteBuffer> queue = pools.remove(key);
+        if (queue != null) {
+            int count = 0;
+            while (queue.poll() != null) {
+                count++;
+            }
+            if (count > 0) {
+                System.out.printf("[ArgbBufferPool] Cleared %d buffers for %dx%d%n", count, width, height);
+            }
+        }
     }
 }

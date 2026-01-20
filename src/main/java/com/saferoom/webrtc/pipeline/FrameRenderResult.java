@@ -122,4 +122,19 @@ public final class FrameRenderResult {
             }
         }
     }
+
+    /**
+     * Clear the static buffer pool to free memory.
+     * Call this when video streaming ends completely.
+     */
+    public static void clearBufferPool() {
+        BUFFER_POOL.clear();
+    }
+
+    /**
+     * Get buffer pool statistics for debugging.
+     */
+    public static String getBufferPoolStats() {
+        return BUFFER_POOL.getStats();
+    }
 }
