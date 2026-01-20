@@ -66,7 +66,8 @@ final class ArgbBufferPool {
     }
 
     ArgbBufferPool(int perResolutionLimit) {
-        this.perResolutionLimit = Math.max(16, perResolutionLimit);
+        // Minimum of 4 buffers for pipeline depth, use provided limit otherwise
+        this.perResolutionLimit = Math.max(4, perResolutionLimit);
     }
 
     /**
@@ -135,8 +136,7 @@ final class ArgbBufferPool {
         if (queue.size() < perResolutionLimit) {
             queue.offer(buffer);
         } else {
-            // Pool is full, buffer is dropped
-            // This should rarely happen now with limit=256
+            // Pool is full, buffer is dropped (this is expected behavior to cap memory)
             poolDrops.incrementAndGet();
         }
     }

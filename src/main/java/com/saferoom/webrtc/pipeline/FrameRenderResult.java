@@ -121,6 +121,15 @@ public final class FrameRenderResult {
                 BUFFER_POOL.release(width, height, buffer);
             }
         }
+        // Note: Double-release is silently ignored (safe) - AtomicBoolean prevents it
+    }
+
+    /**
+     * Check if this frame has been released.
+     * Useful for debugging memory leaks.
+     */
+    public boolean isReleased() {
+        return released.get();
     }
 
     /**

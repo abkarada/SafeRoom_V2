@@ -3,6 +3,7 @@ package com.saferoom.gui.dialog;
 import com.saferoom.gui.components.VideoPanel;
 import com.saferoom.gui.dialog.ScreenSourcePickerDialog;
 import com.saferoom.webrtc.CallManager;
+import com.saferoom.webrtc.pipeline.FrameRenderResult;
 import com.saferoom.webrtc.screenshare.ScreenShareController;
 import com.saferoom.webrtc.screenshare.ScreenSourceOption;
 import dev.onvoid.webrtc.media.video.VideoTrack;
@@ -766,6 +767,9 @@ public class ActiveCallDialog {
         localVideoPanel = null;
         remoteVideoPanel = null;
         remoteScreenPanel = null;
+
+        // Clear the static buffer pool to free memory after call ends
+        FrameRenderResult.clearBufferPool();
 
         if (stage.isShowing()) {
             stage.close();

@@ -67,7 +67,9 @@ public final class FrameProcessor implements AutoCloseable {
         if (!running.get() || frame == null) {
             return;
         }
+        // Check paused BEFORE retaining to avoid leak
         if (paused.get()) {
+            stats.recordDrop();
             return;
         }
         frame.retain();
