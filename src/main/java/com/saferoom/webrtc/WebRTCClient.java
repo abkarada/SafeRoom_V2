@@ -713,6 +713,13 @@ public class WebRTCClient {
                             // Force 'sendrecv' even if track isn't fully attached yet (Early Offer)
                             optimizedSdp = SDPUtils.enforceSendRecv(optimizedSdp, "video");
 
+                            // ⚡ FIX MAC H.264 CROSS-PLATFORM COMPATIBILITY
+                            // Ensure Mac's High Profile H.264 includes packetization-mode=1
+                            // This prevents freezing on Linux/Windows when Mac is offerer
+                            if (IS_MAC) {
+                                optimizedSdp = SDPUtils.enforceHighProfilePacketization(optimizedSdp);
+                            }
+
                             logger.debug(String.format("Optimized SDP from %d bytes to %d bytes",
                                     description.sdp.length(), optimizedSdp.length()));
 
@@ -783,6 +790,13 @@ public class WebRTCClient {
                             // Force 'sendrecv' to ensure we signal that we are sending media
                             optimizedSdp = SDPUtils.enforceSendRecv(optimizedSdp, "video");
                             optimizedSdp = SDPUtils.enforceSendRecv(optimizedSdp, "audio");
+
+                            // ⚡ FIX MAC H.264 CROSS-PLATFORM COMPATIBILITY
+                            // Ensure Mac's High Profile H.264 includes packetization-mode=1
+                            // This prevents freezing on Windows/Linux when Mac is answerer
+                            if (IS_MAC) {
+                                optimizedSdp = SDPUtils.enforceHighProfilePacketization(optimizedSdp);
+                            }
 
                             System.out.printf("[WebRTC] Optimized SDP from %d bytes to %d bytes%n",
                                     description.sdp.length(), optimizedSdp.length());
