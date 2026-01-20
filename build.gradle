@@ -473,9 +473,13 @@ task compileNative {
             javaHome = javacPath
         }
 
-        def javaInclude = "${javaHome}/include"
-        def javaInclude2 = isWindows ? "${javaHome}/include/win32" :
-                  (isMacOS ? "${javaHome}/include/darwin" : "${javaHome}/include/linux")
+        // Normalize all paths to forward slashes for CMake cross-platform compatibility
+        // CMake handles forward slashes on all platforms (Windows/Linux/Mac)
+        // but backslashes on Windows cause "Invalid character escape" errors
+        def javaHomeCMake = javaHome.replace('\\', '/')
+        def javaInclude = "${javaHomeCMake}/include"
+        def javaInclude2 = isWindows ? "${javaHomeCMake}/include/win32" :
+                  (isMacOS ? "${javaHomeCMake}/include/darwin" : "${javaHomeCMake}/include/linux")
 
     // Quick sanity checks (fail fast with clear message)
     if (!file("${javaInclude}/jni.h").exists()) {
@@ -485,12 +489,15 @@ task compileNative {
         throw new GradleException("JNI platform include dir not found: ${javaInclude2} (JAVA_HOME resolved as: ${javaHome})")
     }
 
+    // Normalize build directory path for CMake
+    def buildDirCMake = buildDir.absolutePath.replace('\\', '/')
+
     exec {
         workingDir projectDir
         commandLine 'cmake',
             '-S', 'src/main/native',
-            '-B', buildDir.absolutePath,
-            "-DJAVA_HOME=${javaHome}",
+            '-B', buildDirCMake,
+            "-DJAVA_HOME=${javaHomeCMake}",
             "-DJAVA_INCLUDE_PATH=${javaInclude}",
             "-DJAVA_INCLUDE_PATH2=${javaInclude2}",
             '-DCMAKE_BUILD_TYPE=Release'
@@ -500,7 +507,7 @@ task compileNative {
         println "   → Compiling..."
         exec {
             workingDir projectDir
-            commandLine 'cmake', '--build', buildDir.absolutePath, '--config', 'Release'
+            commandLine 'cmake', '--build', buildDirCMake, '--config', 'Release'
         }
         
         // 3. Find and Copy Artifact
