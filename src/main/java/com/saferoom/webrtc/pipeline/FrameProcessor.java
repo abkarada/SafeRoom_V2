@@ -1,10 +1,13 @@
 package com.saferoom.webrtc.pipeline;
 
 import dev.onvoid.webrtc.media.video.VideoFrame;
+import dev.onvoid.webrtc.media.video.I420Buffer;
 import org.jctools.queues.SpscArrayQueue;
 
 import java.time.Duration;
 import java.util.Objects;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
@@ -21,6 +24,7 @@ public final class FrameProcessor implements AutoCloseable {
     private static final String QUEUE_CAPACITY_PROPERTY = "saferoom.video.queue.capacity";
     public static final int DEFAULT_QUEUE_CAPACITY = Integer.getInteger(QUEUE_CAPACITY_PROPERTY, 12);
     private static final Duration POLL_TIMEOUT = Duration.ofMillis(50);
+    private static final long POLL_SPIN_NANOS = Duration.ofMillis(1).toNanos();
     private static final long STALL_THRESHOLD_NANOS = Duration.ofSeconds(2).toNanos();
     private static final long STALL_LOG_INTERVAL_NANOS = Duration.ofSeconds(5).toNanos();
 
@@ -97,6 +101,7 @@ public final class FrameProcessor implements AutoCloseable {
 
         // Initialize JNI Encoder (per-thread instance if needed, or shared)
         NativeVideoEncoder nativeEncoder = new NativeVideoEncoder();
+        int emptySpinCount = 0;
 
         while (running.get()) {
             try {
@@ -112,6 +117,9 @@ public final class FrameProcessor implements AutoCloseable {
                     }
                     continue;
                 }
+
+                // Reset spin count when we get a frame
+                emptySpinCount = 0;
 
                 // BACKPRESSURE CHECK: If UI is busy, drop frame immediately
                 if (paused.get() || !shouldProcess.test(frame)) {
