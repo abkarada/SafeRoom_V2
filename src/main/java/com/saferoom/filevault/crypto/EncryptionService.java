@@ -17,13 +17,13 @@ import java.util.Base64;
  * Simple, production-grade file encryption
  */
 public class EncryptionService {
-    
+
     private static final String ALGORITHM = "AES/GCM/NoPadding";
     private static final int KEY_SIZE = 256;
     private static final int IV_SIZE = 12;
     private static final int TAG_SIZE = 128;
     private static final SecureRandom secureRandom = new SecureRandom();
-    
+
     /**
      * Generate 256-bit AES key
      */
@@ -32,7 +32,7 @@ public class EncryptionService {
         keyGen.init(KEY_SIZE, secureRandom);
         return keyGen.generateKey();
     }
-    
+
     /**
      * Generate 12-byte IV
      */
@@ -41,73 +41,103 @@ public class EncryptionService {
         secureRandom.nextBytes(iv);
         return iv;
     }
-    
+
     /**
-     * Encrypt file
+     * Encrypt file (Streaming)
      */
     public static EncryptionResult encrypt(Path inputFile, Path outputFile, SecretKey key) throws Exception {
         long startTime = System.currentTimeMillis();
         byte[] iv = generateIV();
-        
+
         Cipher cipher = Cipher.getInstance(ALGORITHM);
         GCMParameterSpec gcmSpec = new GCMParameterSpec(TAG_SIZE, iv);
         cipher.init(Cipher.ENCRYPT_MODE, key, gcmSpec);
-        
-        byte[] inputBytes = Files.readAllBytes(inputFile);
-        byte[] encryptedBytes = cipher.doFinal(inputBytes);
-        
-        try (FileOutputStream fos = new FileOutputStream(outputFile.toFile())) {
+
+        long originalSize = Files.size(inputFile);
+        long encryptedSize = 0;
+
+        try (InputStream fis = Files.newInputStream(inputFile);
+                FileOutputStream fos = new FileOutputStream(outputFile.toFile())) {
+
+            // Write 12-byte IV first
             fos.write(iv);
-            fos.write(encryptedBytes);
+            encryptedSize += IV_SIZE;
+
+            // Stream encryption
+            try (javax.crypto.CipherOutputStream cos = new javax.crypto.CipherOutputStream(fos, cipher)) {
+                byte[] buffer = new byte[8192]; // 8KB buffer
+                int bytesRead;
+                while ((bytesRead = fis.read(buffer)) != -1) {
+                    cos.write(buffer, 0, bytesRead);
+                    encryptedSize += bytesRead; // Approximate (GCM adds tag at end)
+                }
+            }
+            // Tag is added automatically by CipherOutputStream on close
         }
-        
+
         long duration = System.currentTimeMillis() - startTime;
-        
+
+        // Final size check
+        try {
+            encryptedSize = Files.size(outputFile);
+        } catch (IOException ignored) {
+        }
+
         return new EncryptionResult(
-            true,
-            Base64.getEncoder().encodeToString(iv),
-            Base64.getEncoder().encodeToString(key.getEncoded()),
-            inputBytes.length,
-            iv.length + encryptedBytes.length,
-            duration
-        );
+                true,
+                Base64.getEncoder().encodeToString(iv),
+                Base64.getEncoder().encodeToString(key.getEncoded()),
+                originalSize,
+                encryptedSize,
+                duration);
     }
-    
+
     /**
-     * Decrypt file
+     * Decrypt file (Streaming)
      */
     public static DecryptionResult decrypt(Path encryptedFile, Path outputFile, SecretKey key) throws Exception {
         long startTime = System.currentTimeMillis();
-        
-        byte[] encryptedData = Files.readAllBytes(encryptedFile);
-        
-        if (encryptedData.length < IV_SIZE) {
+        long encryptedSize = Files.size(encryptedFile);
+
+        if (encryptedSize < IV_SIZE) {
             return new DecryptionResult(false, "Invalid encrypted file", 0, 0);
         }
-        
-        byte[] iv = new byte[IV_SIZE];
-        System.arraycopy(encryptedData, 0, iv, 0, IV_SIZE);
-        
-        byte[] ciphertext = new byte[encryptedData.length - IV_SIZE];
-        System.arraycopy(encryptedData, IV_SIZE, ciphertext, 0, ciphertext.length);
-        
-        try {
+
+        try (InputStream fis = Files.newInputStream(encryptedFile)) {
+            // Read IV
+            byte[] iv = new byte[IV_SIZE];
+            if (fis.read(iv) != IV_SIZE) {
+                return new DecryptionResult(false, "File too short for IV", encryptedSize, 0);
+            }
+
             Cipher cipher = Cipher.getInstance(ALGORITHM);
             GCMParameterSpec gcmSpec = new GCMParameterSpec(TAG_SIZE, iv);
             cipher.init(Cipher.DECRYPT_MODE, key, gcmSpec);
-            
-            byte[] decryptedBytes = cipher.doFinal(ciphertext);
-            Files.write(outputFile, decryptedBytes);
-            
-            long duration = System.currentTimeMillis() - startTime;
-            
-            return new DecryptionResult(true, "Success", encryptedData.length, decryptedBytes.length, duration);
-            
+
+            try (javax.crypto.CipherInputStream cis = new javax.crypto.CipherInputStream(fis, cipher);
+                    OutputStream fos = Files.newOutputStream(outputFile)) {
+
+                byte[] buffer = new byte[8192];
+                int bytesRead;
+                while ((bytesRead = cis.read(buffer)) != -1) {
+                    fos.write(buffer, 0, bytesRead);
+                }
+            }
         } catch (Exception e) {
-            return new DecryptionResult(false, "Wrong key or corrupted file", encryptedData.length, 0);
+            // Clean up partial output
+            try {
+                Files.deleteIfExists(outputFile);
+            } catch (IOException ignored) {
+            }
+            return new DecryptionResult(false, "Wrong key or corrupted file: " + e.getMessage(), encryptedSize, 0);
         }
+
+        long duration = System.currentTimeMillis() - startTime;
+        long decryptedSize = Files.size(outputFile);
+
+        return new DecryptionResult(true, "Success", encryptedSize, decryptedSize, duration);
     }
-    
+
     /**
      * Convert Base64 to SecretKey
      */
@@ -115,7 +145,7 @@ public class EncryptionService {
         byte[] keyBytes = Base64.getDecoder().decode(base64);
         return new SecretKeySpec(keyBytes, "AES");
     }
-    
+
     // Result classes
     public static class EncryptionResult {
         public final boolean success;
@@ -124,9 +154,9 @@ public class EncryptionService {
         public final long originalSize;
         public final long encryptedSize;
         public final long durationMs;
-        
+
         public EncryptionResult(boolean success, String ivBase64, String keyBase64,
-                                long originalSize, long encryptedSize, long durationMs) {
+                long originalSize, long encryptedSize, long durationMs) {
             this.success = success;
             this.ivBase64 = ivBase64;
             this.keyBase64 = keyBase64;
@@ -135,19 +165,20 @@ public class EncryptionService {
             this.durationMs = durationMs;
         }
     }
-    
+
     public static class DecryptionResult {
         public final boolean success;
         public final String message;
         public final long encryptedSize;
         public final long decryptedSize;
         public final long durationMs;
-        
+
         public DecryptionResult(boolean success, String message, long encryptedSize, long decryptedSize) {
             this(success, message, encryptedSize, decryptedSize, 0);
         }
-        
-        public DecryptionResult(boolean success, String message, long encryptedSize, long decryptedSize, long durationMs) {
+
+        public DecryptionResult(boolean success, String message, long encryptedSize, long decryptedSize,
+                long durationMs) {
             this.success = success;
             this.message = message;
             this.encryptedSize = encryptedSize;
@@ -156,4 +187,3 @@ public class EncryptionService {
         }
     }
 }
-

@@ -89,8 +89,8 @@ public class WebRTCClient {
     private volatile boolean videoPreWarmed = false;
 
     // FIX: Deferred Mac capture start flag for Answerer role
-    // Capture must start AFTER setLocalDescription to ensure encoder gets correct
-    // profile
+    // On Mac, capture MUST start AFTER Answer SDP is set to ensure
+    // VideoToolbox encoder initializes with correct 42e01f profile
     private volatile boolean pendingMacCaptureStart = false;
 
     // Encoder watchdog for detecting VideoToolbox freezes
@@ -713,6 +713,13 @@ public class WebRTCClient {
                             // Force 'sendrecv' even if track isn't fully attached yet (Early Offer)
                             optimizedSdp = SDPUtils.enforceSendRecv(optimizedSdp, "video");
 
+                            // ⚡ FIX MAC H.264 CROSS-PLATFORM COMPATIBILITY
+                            // Ensure Mac's High Profile H.264 includes packetization-mode=1
+                            // This prevents freezing on Linux/Windows when Mac is offerer
+                            if (IS_MAC) {
+                                optimizedSdp = SDPUtils.enforceHighProfilePacketization(optimizedSdp);
+                            }
+
                             logger.debug(String.format("Optimized SDP from %d bytes to %d bytes",
                                     description.sdp.length(), optimizedSdp.length()));
 
@@ -784,6 +791,13 @@ public class WebRTCClient {
                             optimizedSdp = SDPUtils.enforceSendRecv(optimizedSdp, "video");
                             optimizedSdp = SDPUtils.enforceSendRecv(optimizedSdp, "audio");
 
+                            // ⚡ FIX MAC H.264 CROSS-PLATFORM COMPATIBILITY
+                            // Ensure Mac's High Profile H.264 includes packetization-mode=1
+                            // This prevents freezing on Windows/Linux when Mac is answerer
+                            if (IS_MAC) {
+                                optimizedSdp = SDPUtils.enforceHighProfilePacketization(optimizedSdp);
+                            }
+
                             System.out.printf("[WebRTC] Optimized SDP from %d bytes to %d bytes%n",
                                     description.sdp.length(), optimizedSdp.length());
 
@@ -791,16 +805,15 @@ public class WebRTCClient {
                             logSdpVideoCodecs(optimizedSdp, "ANSWER");
 
                             // ═══════════════════════════════════════════════════════════════
-                            // FIX: NOW start Mac capture (after setLocalDescription with Answer)
-                            // The encoder will initialize with the correct 42e01f profile
-                            // that was negotiated in the Answer SDP.
+                            // MAC FIX: NOW start capture (after Answer SDP locks 42e01f profile)
+                            // VideoToolbox encoder initializes with correct profile from Answer
                             // ═══════════════════════════════════════════════════════════════
                             if (IS_MAC && pendingMacCaptureStart && videoSource != null) {
                                 try {
-                                    logger.info("MAC ANSWERER: NOW starting capture (profile locked to Answer SDP)");
+                                    logger.info("MAC ANSWERER: NOW starting capture (after Answer SDP 42e01f lock)");
                                     videoSource.start();
                                     pendingMacCaptureStart = false;
-                                    logger.info("MAC ANSWERER: Camera capture started with correct 42e01f profile");
+                                    logger.info("MAC ANSWERER: Camera capture started with correct profile");
                                     startEncoderWatchdog();
                                 } catch (Exception e) {
                                     logger.error("Failed to start Mac answerer capture: " + e.getMessage(), e);
@@ -988,9 +1001,6 @@ public class WebRTCClient {
         // Stop encoder watchdog first
         stopEncoderWatchdog();
 
-        // Reset Mac capture flag
-        pendingMacCaptureStart = false;
-
         // Clean up all audio sinks first (properly remove from tracks)
         cleanupAllAudioSinks();
 
@@ -1161,16 +1171,20 @@ public class WebRTCClient {
 
     /**
      * ═══════════════════════════════════════════════════════════════════
-     * ANSWERER BINDING FIX: Find existing video sender from transceiver
+     * LAW 1: EXPLICIT TRANSCEIVER DIRECTION
      * ═══════════════════════════════════════════════════════════════════
      * 
      * When we're the Answerer, setRemoteDescription(OFFER) creates a video
-     * transceiver with an empty sender. We must use replaceTrack() on this
-     * existing sender instead of addTrack() (which would create a second sender).
+     * transceiver with an empty sender. We must:
+     * 1. Use replaceTrack() on this existing sender (not addTrack)
+     * 2. Call setDirection(SEND_RECV) to enable outbound media
      * 
-     * @return Existing video sender to bind to, or null if none found
+     * Without setDirection, the transceiver remains in recvonly mode and
+     * the Offerer never receives the Answerer's video frames.
+     * 
+     * @return Existing video transceiver to bind to, or null if none found
      */
-    private RTCRtpSender findExistingVideoSender() {
+    private RTCRtpTransceiver findExistingVideoTransceiver() {
         if (peerConnection == null)
             return null;
 
@@ -1192,8 +1206,8 @@ public class WebRTCClient {
                 if (transceiver.getReceiver() != null) {
                     MediaStreamTrack rcvTrack = transceiver.getReceiver().getTrack();
                     if (rcvTrack != null && "video".equalsIgnoreCase(rcvTrack.getKind())) {
-                        logger.debug("🔍 Found empty video sender from transceiver (Answerer binding)");
-                        return sender;
+                        logger.info("TRANSCEIVER_INIT: KIND [VIDEO] FOUND EMPTY SLOT");
+                        return transceiver;
                     }
                 }
             }
@@ -1222,77 +1236,61 @@ public class WebRTCClient {
                     this.videoSource = preWarmedVideoSource;
                     VideoTrack videoTrack = preWarmedVideoTrack;
 
-                    // ═══════════════════════════════════════════════════════════════
-                    // MAC JIT: NOW start capture (after setRemoteDescription validated profile)
-                    // ═══════════════════════════════════════════════════════════════
-                    if (IS_MAC && this.videoSource != null) {
-                        // ═══════════════════════════════════════════════════════════════
-                        // FIX: For Mac ANSWERER, defer capture start until AFTER setLocalDescription
-                        // This ensures VideoToolbox encoder initializes with the correct 42e01f
-                        // profile from the negotiated Answer SDP, preventing freeze.
-                        // ═══════════════════════════════════════════════════════════════
-                        RTCRtpSender existingSender = findExistingVideoSender();
-                        boolean isAnswererRole = (existingSender != null);
-
-                        if (isAnswererRole) {
-                            // ANSWERER: Defer capture until after setLocalDescription
-                            logger.info("MAC ANSWERER: Deferring capture until after Answer SDP is set");
-                            logger.info("   Encoder will initialize with negotiated 42e01f profile");
-                            pendingMacCaptureStart = true;
-                            // Capture will be triggered by createAnswerInternal after setLocalDescription
-                        } else {
-                            // OFFERER: Start capture now (profile already set by createOffer)
-                            try {
-                                logger.info("MAC OFFERER: Starting capture now");
-                                this.videoSource.start();
-                                logger.info("MAC: Camera capture started (OFFERER mode)");
-                                startEncoderWatchdog();
-                            } catch (Exception e) {
-                                logger.error("Failed to start Mac camera capture: " + e.getMessage(), e);
-                                throw new RuntimeException("Mac camera JIT start failed", e);
-                            }
-                        }
-                    }
-
-                    // Clear pre-warm state
+                    // Clear pre-warm state first
                     preWarmedVideoTrack = null;
                     preWarmedVideoSource = null;
                     videoPreWarmed = false;
 
                     // ═══════════════════════════════════════════════════════════════
-                    // ANSWERER BINDING FIX: Use replaceTrack if transceiver exists
+                    // THREE LAWS IMPLEMENTATION (Pre-warmed path)
+                    // Law 1: Explicit Transceiver Direction (setDirection SEND_RECV)
+                    // Law 2: Synchronous Capture & Binding (capture after replaceTrack)
                     // ═══════════════════════════════════════════════════════════════
                     pcLock.lock();
                     try {
-                        RTCRtpSender existingSender = findExistingVideoSender();
-                        if (existingSender != null) {
+                        RTCRtpTransceiver existingTransceiver = findExistingVideoTransceiver();
+                        if (existingTransceiver != null) {
+                            RTCRtpSender existingSender = existingTransceiver.getSender();
+
                             // Answerer flow: bind to transceiver created by offer
-                            logger.info("TRANSCEIVER BINDING: REPLACETRACK on existing sender (pre-warmed path)");
+                            logger.info("ANSWERER_BINDING: ATTACHING TRACK TO SENDER");
                             existingSender.replaceTrack(videoTrack);
                             videoSender = existingSender;
-                            logger.info("Pre-warmed track bound to negotiated transceiver (640x480)");
+
+                            // LAW 1: Explicit direction enforcement
+                            logger.info("HANDSHAKE_STATE: ENFORCING SENDRECV ON ANSWER");
+                            existingTransceiver.setDirection(RTCRtpTransceiverDirection.SEND_RECV);
+                            logger.info("TRANSCEIVER_INIT: KIND [VIDEO] DIRECTION [SENDRECV]");
 
                             // ═══════════════════════════════════════════════════════════════
-                            // CRITICAL FIX: Start capture AFTER replaceTrack() for Answerer
-                            // This ensures RTP sender has the track bound before encoding starts.
-                            // Without this, the Offerer never receives the Answerer's video!
+                            // MAC FIX: Defer capture until AFTER Answer SDP is set
+                            // VideoToolbox encoder must initialize with 42e01f profile from Answer
                             // ═══════════════════════════════════════════════════════════════
-                            if (!IS_MAC && this.videoSource != null) {
-                                logger.info("ANSWERER: Starting camera capture AFTER replaceTrack (FIX)");
-                                this.videoSource.start();
-                                logger.info("✅ Camera capture started - Offerer should now receive video");
+                            if (IS_MAC) {
+                                logger.info("MAC ANSWERER: Deferring capture until after Answer SDP");
+                                pendingMacCaptureStart = true;
+                                // Capture will be triggered by createAnswerInternal
+                            } else {
+                                // Non-Mac: start capture immediately
+                                if (this.videoSource != null) {
+                                    logger.info("JIT: STARTING CAPTURE SYNCHRONOUS WITH BINDING");
+                                    this.videoSource.start();
+                                    logger.info("CAPTURE: STARTED - OFFERER SHOULD RECEIVE VIDEO");
+                                }
                             }
                         } else {
-                            // Offerer flow: create new sender (capture starts later in normal addVideoTrack
-                            // path)
+                            // Offerer flow: create new sender
                             logger.info("OFFERER MODE: Creating new video sender (pre-warmed path)");
                             videoSender = peerConnection.addTrack(videoTrack, List.of("stream1"));
                             logger.info("Pre-warmed video track added (640x480)");
 
-                            // For Offerer using pre-warmed path, start capture now
-                            if (!IS_MAC && this.videoSource != null) {
-                                logger.info("OFFERER: Starting camera capture");
+                            // For Offerer, start capture now
+                            if (this.videoSource != null) {
+                                logger.info("JIT: STARTING CAPTURE FOR OFFERER");
                                 this.videoSource.start();
+                                if (IS_MAC) {
+                                    startEncoderWatchdog();
+                                }
                             }
                         }
                         applyVideoCodecPreferences();
@@ -1328,20 +1326,25 @@ public class WebRTCClient {
                 VideoTrack videoTrack = resource.getTrack();
 
                 // ═══════════════════════════════════════════════════════════════
-                // ANSWERER BINDING FIX: Use replaceTrack if transceiver exists
-                // When Answerer, the remote Offer creates a transceiver with empty sender.
-                // We MUST use replaceTrack() to bind our track to it, NOT addTrack()
-                // which would create a second sender (leaving offerer on dummy 320x240).
+                // THREE LAWS IMPLEMENTATION (Normal path)
+                // Law 1: Explicit Transceiver Direction (setDirection SEND_RECV)
+                // Law 2: Synchronous Capture & Binding (capture after replaceTrack)
                 // ═══════════════════════════════════════════════════════════════
                 pcLock.lock();
                 try {
-                    RTCRtpSender existingSender = findExistingVideoSender();
-                    if (existingSender != null) {
+                    RTCRtpTransceiver existingTransceiver = findExistingVideoTransceiver();
+                    if (existingTransceiver != null) {
+                        RTCRtpSender existingSender = existingTransceiver.getSender();
+
                         // Answerer flow: bind to transceiver created by offer
-                        logger.info("TRANSCEIVER BINDING: REPLACETRACK on existing sender (normal path)");
+                        logger.info("ANSWERER_BINDING: ATTACHING TRACK TO SENDER (normal path)");
                         existingSender.replaceTrack(videoTrack);
                         videoSender = existingSender;
-                        logger.info("Video track bound to negotiated transceiver (640x480)");
+
+                        // LAW 1: Explicit direction enforcement
+                        logger.info("HANDSHAKE_STATE: ENFORCING SENDRECV ON ANSWER");
+                        existingTransceiver.setDirection(RTCRtpTransceiverDirection.SEND_RECV);
+                        logger.info("TRANSCEIVER_INIT: KIND [VIDEO] DIRECTION [SENDRECV]");
                     } else {
                         // Offerer flow: create new sender
                         logger.info("OFFERER MODE: Creating new video sender (normal path)");
@@ -1355,6 +1358,11 @@ public class WebRTCClient {
 
                 // FIX: Explicitly start capture AFTER adding track
                 resource.startCapture();
+
+                // Mac encoder protection
+                if (IS_MAC) {
+                    startEncoderWatchdog();
+                }
 
                 logger.info("Video track added with optimized settings (Res: 640x480, FPS: 30)");
                 if (IS_MAC) {

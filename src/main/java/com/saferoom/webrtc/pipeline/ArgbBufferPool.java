@@ -3,8 +3,9 @@ package com.saferoom.webrtc.pipeline;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Map;
-import java.util.concurrent.ArrayBlockingQueue;
+import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -34,16 +35,18 @@ import java.util.concurrent.atomic.AtomicLong;
 final class ArgbBufferPool {
 
     /**
-     * Buffer limit per resolution.
+     * Soft limit per resolution to prevent infinite growth.
+     * 256 * 1.2MB (VGA) ~= 300MB per resolution.
+     * This is safe and far better than 15GB of churn.
      */
-    private static final int DEFAULT_PER_RESOLUTION_LIMIT = 16;
+    private static final int DEFAULT_PER_RESOLUTION_LIMIT = 256;
 
     /**
-     * Maximum total buffers across all resolutions.
+     * Maximum total buffers across all resolutions to prevent global OOM.
      */
-    private static final int MAX_TOTAL_BUFFERS = 32;
+    private static final int MAX_TOTAL_BUFFERS = 1024;
 
-    private final Map<Long, ArrayBlockingQueue<ByteBuffer>> pools = new ConcurrentHashMap<>();
+    private final Map<Long, Queue<ByteBuffer>> pools = new ConcurrentHashMap<>();
     private final int perResolutionLimit;
 
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -59,7 +62,7 @@ final class ArgbBufferPool {
     }
 
     ArgbBufferPool(int perResolutionLimit) {
-        this.perResolutionLimit = Math.max(1, perResolutionLimit);
+        this.perResolutionLimit = Math.max(16, perResolutionLimit);
     }
 
     /**
@@ -69,10 +72,12 @@ final class ArgbBufferPool {
      */
     ByteBuffer acquire(int width, int height) {
         long key = toKey(width, height);
-        ArrayBlockingQueue<ByteBuffer> queue = pools.computeIfAbsent(
-                key, ignored -> new ArrayBlockingQueue<>(perResolutionLimit));
+        Queue<ByteBuffer> queue = pools.get(key); // No computeIfAbsent yet to be faster
 
-        ByteBuffer buffer = queue.poll();
+        ByteBuffer buffer = null;
+        if (queue != null) {
+            buffer = queue.poll();
+        }
 
         // Ensure buffer is large enough
         int requiredCapacity = width * height * 4;
@@ -89,9 +94,10 @@ final class ArgbBufferPool {
         long created = totalBuffersCreated.incrementAndGet();
 
         // Log warning if we're creating too many buffers (indicates pool exhaustion)
-        if (created > MAX_TOTAL_BUFFERS && created % 10 == 0) {
-            System.err.printf("[ArgbBufferPool] ⚠️ High allocation count: %d buffers created (hits=%d, misses=%d)%n",
-                    created, poolHits.get(), poolMisses.get());
+        if (created > MAX_TOTAL_BUFFERS && created % 50 == 0) {
+            System.err.printf(
+                    "[ArgbBufferPool] ⚠️ High allocation count: %d buffers created (hits=%d, misses=%d, drops=%d)%n",
+                    created, poolHits.get(), poolMisses.get(), poolDrops.get());
         }
 
         // Use DirectByteBuffer for zero-copy interoperability
@@ -112,17 +118,21 @@ final class ArgbBufferPool {
 
         int requiredCapacity = width * height * 4;
         if (buffer.capacity() < requiredCapacity) {
-            // Don't pool buffers that are too small (should shouldn't happen but sanity
-            // check)
-            return;
+            return; // Sanity check
         }
 
         long key = toKey(width, height);
-        ArrayBlockingQueue<ByteBuffer> queue = pools.computeIfAbsent(
-                key, ignored -> new ArrayBlockingQueue<>(perResolutionLimit));
+        // Use ConcurrentLinkedQueue for non-blocking unbounded wait-free ops
+        // We handle the bound manually
+        Queue<ByteBuffer> queue = pools.computeIfAbsent(
+                key, ignored -> new ConcurrentLinkedQueue<>());
 
-        if (!queue.offer(buffer)) {
+        // Soft limit check
+        if (queue.size() < perResolutionLimit) {
+            queue.offer(buffer);
+        } else {
             // Pool is full, buffer is dropped
+            // This should rarely happen now with limit=256
             poolDrops.incrementAndGet();
         }
     }

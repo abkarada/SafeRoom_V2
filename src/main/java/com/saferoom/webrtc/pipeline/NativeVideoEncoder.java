@@ -1,5 +1,6 @@
 package com.saferoom.webrtc.pipeline;
 
+import com.saferoom.util.NativeLibraryLoader;
 import java.nio.ByteBuffer;
 
 /**
@@ -24,6 +25,12 @@ import java.nio.ByteBuffer;
  */
 public class NativeVideoEncoder {
 
+    static {
+        // Load the platform-specific native library (e.g. libnative_encoder.so)
+        // Checks System path first, then extracts from JAR resources.
+        NativeLibraryLoader.loadLibrary("native_encoder");
+    }
+
     /**
      * Encode a frame data directly from a ByteBuffer.
      * 
@@ -36,24 +43,34 @@ public class NativeVideoEncoder {
      */
     public native int encodeFrame(ByteBuffer buffer, int length, int width, int height);
 
-    // Example C++ implementation provided in documentation
+    /**
+     * Convert I420 buffer to ARGB using native SIMD optimized code.
+     * Use internal native buffer pool to avoid Java Heap allocations.
+     * 
+     * @param y       Y plane buffer
+     * @param u       U plane buffer
+     * @param v       V plane buffer
+     * @param strideY Y stride
+     * @param strideU U stride
+     * @param strideV V stride
+     * @param width   Frame width
+     * @param height  Frame height
+     * @return DirectByteBuffer wrapping the pooled ARGB data
+     */
+    public native ByteBuffer convertI420ToARGB(
+            ByteBuffer y, ByteBuffer u, ByteBuffer v,
+            int strideY, int strideU, int strideV,
+            int width, int height);
+
+    /**
+     * Release/Unlock a buffer back to the native pool.
+     * 
+     * @param buffer The buffer to release
+     */
+    public native void releaseBuffer(ByteBuffer buffer);
+
     /*
-     * JNIEXPORT jint JNICALL
-     * Java_com_saferoom_webrtc_pipeline_NativeVideoEncoder_encodeFrame
-     * (JNIEnv *env, jobject thisObj, jobject buffer, jint length, jint width, jint
-     * height) {
-     * 
-     * // 1. Get direct access to memory (Zero Copy, No GC Pause)
-     * void* data = env->GetDirectBufferAddress(buffer);
-     * 
-     * if (data == NULL) {
-     * return -1; // Not a direct buffer
-     * }
-     * 
-     * // 2. Pass to encoder (e.g. FFmpeg / x264)
-     * // encoder_encode(ctx, (uint8_t*)data, width, height, ...);
-     * 
-     * return 0;
-     * }
+     * Example C++ implementation provided in documentation
+     * ... (comments preserved from original)
      */
 }

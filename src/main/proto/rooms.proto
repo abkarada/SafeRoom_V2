@@ -1,0 +1,366 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+package com.saferoom.rooms.grpc;
+
+service RoomService {
+  // Lifecycle
+  rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse);
+  rpc ListRooms(ListRoomsRequest) returns (ListRoomsResponse);
+  rpc GetRoomInfo(GetRoomInfoRequest) returns (GetRoomInfoResponse);
+
+  // Membership
+  rpc JoinRoom(JoinRoomRequest) returns (JoinRoomResponse);
+  rpc LeaveRoom(LeaveRoomRequest) returns (LeaveRoomResponse);
+  
+  // Voice Membership (Mesh)
+  rpc JoinVoice(JoinVoiceRequest) returns (JoinVoiceResponse);
+  rpc LeaveVoice(LeaveVoiceRequest) returns (LeaveVoiceResponse);
+  
+  // Bootstrapping (Overlay)
+  // Used by new peers to find entry points (Seeds) into the tree
+  rpc GetSeeds(GetSeedsRequest) returns (GetSeedsResponse);
+  
+  // Signaling Relay (for functionality not on DataChannel yet, e.g. initial connection)
+  // Routes SDP/ICE between peers via Server
+  rpc RelaySignal(SignalRelayRequest) returns (SignalRelayResponse);
+  
+  // Server-to-Client Event Stream (Presence, Voice State, Signals)
+  rpc StreamEvents(StreamEventsRequest) returns (stream RoomEvent);
+
+  // Sprint 13: Channel Management
+  rpc CreateChannel(CreateChannelRequest) returns (CreateChannelResponse);
+  rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse);
+  rpc DeleteChannel(DeleteChannelRequest) returns (DeleteChannelResponse);
+
+  // Sprint 14: Message Management
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+  rpc GetMessages(GetMessagesRequest) returns (GetMessagesResponse);
+}
+
+// =============================================================================
+// 1. SIGNALING & RPC MESSAGES (Server Interaction)
+// =============================================================================
+
+message RoomMetadata {
+  string roomId = 1;
+  string name = 2;
+  string ownerNodeId = 3;
+  bool isPrivate = 4;
+  int64 createdAt = 5;
+  int32 onlineCount = 6;
+  int32 voiceCount = 7;
+}
+
+message CreateRoomRequest {
+  string name = 1;
+  string ownerNodeId = 2;
+  bool isPrivate = 3;
+}
+
+message CreateRoomResponse {
+  bool success = 1;
+  string message = 2;
+  RoomMetadata room = 3; // Returns the created room details
+}
+
+message ListRoomsRequest {
+  // Optional filters
+  string searchQuery = 1;
+}
+
+message ListRoomsResponse {
+  repeated RoomMetadata rooms = 1;
+}
+
+message GetRoomInfoRequest {
+  string roomId = 1;
+}
+
+message GetRoomInfoResponse {
+  bool exists = 1;
+  RoomMetadata room = 2;
+}
+
+message RoomPeer {
+  string nodeId = 1;
+  string pubKey = 2;
+  string role = 3; // LEAF, ROUTER, STORE
+  // Capability stats for seed selection
+  int32 connectedChildren = 4;
+  int32 maxChildren = 5;
+}
+
+message JoinRoomRequest {
+  string roomId = 1;
+  string nodeId = 2;
+  string pubKey = 3;
+}
+
+message JoinRoomResponse {
+  bool success = 1;
+  string message = 2;
+  int64 currentEpoch = 3;
+  RoomPeer selfRole = 4;
+}
+
+message LeaveRoomRequest {
+  string roomId = 1;
+  string nodeId = 2;
+}
+
+message LeaveRoomResponse {
+  bool success = 1;
+}
+
+message JoinVoiceRequest {
+  string roomId = 1;
+  string nodeId = 2;
+}
+
+message JoinVoiceResponse {
+  bool success = 1;
+  int32 voicePeerCount = 2;
+}
+
+message LeaveVoiceRequest {
+  string roomId = 1;
+  string nodeId = 2;
+}
+
+message LeaveVoiceResponse {
+  bool success = 1;
+}
+
+message GetSeedsRequest {
+  string roomId = 1;
+  int64 knownEpoch = 2;
+}
+
+message GetSeedsResponse {
+  int64 epoch = 1;
+  repeated RoomPeer seedRouters = 2; // Recommended parents
+}
+
+message SignalRelayRequest {
+  string roomId = 1;
+  string srcNodeId = 2;
+  string dstNodeId = 3;
+  
+  // Encapsulated Signal
+  oneof signal {
+     SdpOffer offer = 4;
+     SdpAnswer answer = 5;
+     IceCandidate ice = 6;
+  }
+}
+
+message SignalRelayResponse {
+  bool success = 1;
+}
+
+message StreamEventsRequest {
+  string roomId = 1;
+  string nodeId = 2;
+}
+
+// Server -> Client Events
+message RoomEvent {
+  enum EventType {
+    UNKNOWN = 0;
+    ROOM_PRESENCE = 1; // Someone joined/left room
+    VOICE_PRESENCE = 2; // Someone joined/left voice
+    EPOCH_CHANGE = 3;   // Topology epoch changed
+    SIGNAL_RELAY = 4;   // P2P Signal (SDP/ICE) forwarded by server
+    FILE_META = 5;      // New File published
+    CHANNEL_CREATED = 6;
+    CHANNEL_DELETED = 7;
+    MESSAGE_RECEIVED = 8;
+  }
+  
+  EventType type = 1;
+  int64 timestamp = 2;
+  string msgId = 7; // For deduplication/idempotency
+  
+  // Payloads
+  RoomPresence presence = 3;
+  VoicePresence voice = 4;
+  SignalRelayRequest signal = 5; // Incoming signal
+  int64 newEpoch = 6;
+  FileMeta fileMeta = 8;
+  
+  // Sprint 15 Payloads
+  ChannelMetadata channel = 9;
+  string channelId = 10; // For deletion
+  ChatMessage message = 11;
+}
+
+message RoomPresence {
+  string roomId = 1;
+  int32 connectedPeersCount = 2;
+  repeated RoomPeer peers = 3; // Delta or full snapshot
+}
+
+message VoicePresence {
+  string roomId = 1;
+  repeated string voicePeerIds = 2;
+}
+
+message FileMeta {
+  string fileId = 1;
+  string name = 2;
+  int64 sizeBytes = 3;
+  int32 pieceCount = 4;
+  int32 pieceSize = 5;
+  repeated bytes pieceHashes = 6;
+}
+
+// DataChannel Ephemeral File Messages
+message FileMessage {
+  enum Type {
+    UNKNOWN = 0;
+    HAVE = 1; // "I have piece X"
+    REQUEST = 2; // "Send me piece X"
+    PIECE = 3;   // "Here is piece X"
+  }
+  Type type = 1;
+  string fileId = 2;
+  
+  // For HAVE & REQUEST
+  int32 pieceIndex = 3;
+  
+  // For PIECE
+  bytes data = 4;
+  
+  // For HAVE (Bitmap variant, optional)
+  bytes bitfield = 5;
+}
+
+// =============================================================================
+// 2. WEBRTC SIGNALING TYPES (Strict Type Definition)
+// =============================================================================
+
+message SdpOffer {
+  string sdp = 1;
+}
+
+message SdpAnswer {
+  string sdp = 1;
+}
+
+message IceCandidate {
+  string candidate = 1;
+  string sdpMid = 2;
+  int32 sdpMLineIndex = 3;
+}
+
+// =============================================================================
+// 3. DATA OVERLAY WIRE FORMAT (DataChannel Messages)
+// =============================================================================
+
+// The "Envelope" wrapping all DataChannel traffic
+message Envelope {
+  int32 v = 1; // Version (1)
+  string roomId = 2;
+  int64 epoch = 3;
+  
+  enum Type {
+    CTRL = 0;
+    CHAT = 1;
+    META = 2;
+    SYNC = 3;
+    FILE = 4;
+  }
+  Type type = 4;
+  string subtype = 5; // e.g. "HELLO", "PARENT_REQ"
+  
+  string msgId = 6; // 128-bit random hex
+  string srcNodeId = 7;
+  string dstNodeId = 8; // null/empty for broadcast
+  
+  int32 ttl = 9;
+  int32 hopCount = 10;
+  
+  int64 ts = 11;
+  
+  // Inner Payload: Encrypted JSON bytes or serialized Proto
+  // For v1 we can use bytes to support the encryption Spec
+  bytes payload = 12; 
+}
+
+// =============================================================================
+// 5. SPRINT 13: CHANNEL MESSAGES
+// =============================================================================
+
+message ChannelMetadata {
+  string channelId = 1;
+  string roomId = 2;
+  string name = 3;
+  string type = 4;  // TEXT, VOICE, FILE
+  string category = 5;
+  int32 position = 6;
+}
+
+message CreateChannelRequest {
+  string roomId = 1;
+  string name = 2;
+  string type = 3;
+  string category = 4;
+}
+
+message CreateChannelResponse {
+  bool success = 1;
+  string message = 2;
+  ChannelMetadata channel = 3;
+}
+
+message ListChannelsRequest {
+  string roomId = 1;
+}
+
+message ListChannelsResponse {
+  repeated ChannelMetadata channels = 1;
+}
+
+message DeleteChannelRequest {
+  string channelId = 1;
+}
+
+message DeleteChannelResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// =============================================================================
+// 6. SPRINT 14: CHAT MESSAGE MESSAGES
+// =============================================================================
+
+message ChatMessage {
+  string messageId = 1;
+  string channelId = 2;
+  string senderUsername = 3;
+  string content = 4;
+  int64 sentAt = 5;
+}
+
+message SendMessageRequest {
+  string channelId = 1;
+  string senderUsername = 2;
+  string content = 3;
+}
+
+message SendMessageResponse {
+  bool success = 1;
+  string message = 2;
+  ChatMessage savedMessage = 3;
+}
+
+message GetMessagesRequest {
+  string channelId = 1;
+  int32 limit = 2;
+  int64 beforeTimestamp = 3;  // For pagination (0 = latest)
+}
+
+message GetMessagesResponse {
+  repeated ChatMessage messages = 1;
+}

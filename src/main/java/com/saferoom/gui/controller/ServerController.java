@@ -40,6 +40,10 @@ import javafx.scene.input.TransferMode;
 import javafx.scene.input.ClipboardContent;
 import javafx.scene.SnapshotParameters;
 import com.saferoom.gui.controller.MainController; // Ensure this is imported if not already
+import com.saferoom.rooms.client.ActiveRoomSession;
+import com.saferoom.rooms.client.logic.DataFSM;
+import com.saferoom.rooms.grpc.RoomPeer;
+import javafx.application.Platform;
 
 public class ServerController implements Initializable {
 
@@ -471,9 +475,32 @@ public class ServerController implements Initializable {
     }
 
     private void createTextChannel(String name, VBox container) {
+        String roomId = ActiveRoomSession.getInstance().getRoomId();
+        String channelId = null;
+
+        // Sprint 13: Create channel via RPC (not direct DB)
+        if (roomId != null && com.saferoom.client.ClientMenu.roomClient != null) {
+            try {
+                var response = com.saferoom.client.ClientMenu.roomClient.createChannel(roomId, name, "TEXT", "GENERAL");
+                if (response.getSuccess()) {
+                    channelId = response.getChannel().getChannelId();
+                    System.out.println("[Channels] Created text channel via RPC: " + name + " (ID: " + channelId + ")");
+                } else {
+                    System.err.println("[Channels] RPC failed: " + response.getMessage());
+                }
+            } catch (Exception e) {
+                System.err.println("[Channels] Failed to create channel: " + e.getMessage());
+            }
+        }
+
+        if (channelId == null) {
+            channelId = java.util.UUID.randomUUID().toString(); // Fallback local ID
+        }
+
         HBox item = new HBox(8.0);
         item.setAlignment(Pos.CENTER_LEFT);
         item.getStyleClass().add("text-channel-item");
+        item.setUserData(channelId); // Store channel ID for later reference
 
         FontIcon icon = new FontIcon("fas-comment");
         icon.getStyleClass().add("channel-icon");
@@ -505,9 +532,34 @@ public class ServerController implements Initializable {
     }
 
     private void createVoiceChannel(String name, VBox container, int userLimit) {
+        String roomId = ActiveRoomSession.getInstance().getRoomId();
+        String channelId = null;
+
+        // Sprint 13: Create channel via RPC
+        if (roomId != null && com.saferoom.client.ClientMenu.roomClient != null) {
+            try {
+                var response = com.saferoom.client.ClientMenu.roomClient.createChannel(roomId, name, "VOICE",
+                        "GENERAL");
+                if (response.getSuccess()) {
+                    channelId = response.getChannel().getChannelId();
+                    System.out
+                            .println("[Channels] Created voice channel via RPC: " + name + " (ID: " + channelId + ")");
+                } else {
+                    System.err.println("[Channels] RPC failed: " + response.getMessage());
+                }
+            } catch (Exception e) {
+                System.err.println("[Channels] Failed to create channel: " + e.getMessage());
+            }
+        }
+
+        if (channelId == null) {
+            channelId = java.util.UUID.randomUUID().toString(); // Fallback
+        }
+
         HBox item = new HBox(8.0);
         item.setAlignment(Pos.CENTER_LEFT);
         item.getStyleClass().add("voice-channel-item");
+        item.setUserData(channelId); // Store channel ID for later reference
 
         FontIcon icon = new FontIcon("fas-volume-up");
         icon.getStyleClass().add("channel-icon");
@@ -564,6 +616,9 @@ public class ServerController implements Initializable {
 
     private SidebarState currentSidebarState = SidebarState.OPEN;
 
+    // Sprint 12: Track current channel for message persistence
+    private String currentChannelId = null;
+
     @Override
     public void initialize(URL url, ResourceBundle resourceBundle) {
         setupChannelHandlers();
@@ -578,7 +633,10 @@ public class ServerController implements Initializable {
 
         setupReordering(fileChannelsList);
 
-        initializeMockData();
+        // Sprint 10: Initialize from ActiveRoomSession if available, otherwise use mock
+        // fallback
+        initializeRoomSession();
+
         setupContextMenusForExistingNodes();
         populateUsers();
         setupMessageListView();
@@ -776,6 +834,153 @@ public class ServerController implements Initializable {
         }
     }
 
+    // Sprint 10: Real presence integration
+    private DataFSM currentFSM;
+
+    private void initializeRoomSession() {
+        DataFSM fsm = ActiveRoomSession.getInstance().getFSM();
+        if (fsm != null) {
+            this.currentFSM = fsm;
+            System.out.println("[ServerController] Connected to real room session: "
+                    + ActiveRoomSession.getInstance().getRoomName());
+
+            // Listen for real presence updates and events
+            fsm.addUIListener(new DataFSM.UIListener() {
+                @Override
+                public void onPresenceUpdate(java.util.List<RoomPeer> peers) {
+                    Platform.runLater(() -> updateMembersFromPresence(peers));
+                }
+
+                @Override
+                public void onStateChange(DataFSM.State newState) {
+                    System.out.println("[ServerController] FSM state: " + newState);
+                }
+
+                @Override
+                public void onChannelCreated(com.saferoom.rooms.grpc.ChannelMetadata ch) {
+                    Platform.runLater(() -> {
+                        System.out.println("[ServerController] New channel received: " + ch.getName());
+                        if ("VOICE".equals(ch.getType())) {
+                            if (voiceChannels.stream().noneMatch(c -> c.getId().equals(ch.getChannelId()))) {
+                                voiceChannels.add(new Channel(ch.getChannelId(), ch.getName(), "voice", false));
+                            }
+                        } else if ("TEXT".equals(ch.getType())) {
+                            if (textChannels.stream().noneMatch(c -> c.getId().equals(ch.getChannelId()))) {
+                                textChannels.add(new Channel(ch.getChannelId(), ch.getName(), "text", false));
+                            }
+                        }
+                    });
+                }
+
+                @Override
+                public void onChannelDeleted(String channelId) {
+                    Platform.runLater(() -> {
+                        System.out.println("[ServerController] Channel deleted: " + channelId);
+                        voiceChannels.removeIf(c -> c.getId().equals(channelId));
+                        textChannels.removeIf(c -> c.getId().equals(channelId));
+                        if (channelId.equals(currentChannelId)) {
+                            messagesListView.getItems().clear();
+                            currentChannelName.setText("Channel Deleted");
+                            currentChannelId = null;
+                            messageTextField.setDisable(true);
+                        }
+                    });
+                }
+
+                @Override
+                public void onMessageReceived(com.saferoom.rooms.grpc.ChatMessage msg) {
+                    Platform.runLater(() -> {
+                        if (msg.getChannelId().equals(currentChannelId)) {
+                            String content = msg.getContent();
+                            String sender = msg.getSenderUsername();
+                            String avatar = sender.isEmpty() ? "?" : sender.substring(0, 1).toUpperCase();
+                            messagesListView.getItems().add(new Message(content, sender, avatar));
+                            messagesListView.scrollTo(messagesListView.getItems().size() - 1);
+                        }
+                    });
+                }
+            });
+
+            // Sprint 11: Load channels from DB
+            loadChannelsFromDB();
+        } else {
+            // Fallback to mock data if no active session
+            System.out.println("[ServerController] No active room session, using mock data");
+            initializeMockData();
+        }
+    }
+
+    // Sprint 13: Load persisted channels via RPC
+    private void loadChannelsFromDB() {
+        String roomId = ActiveRoomSession.getInstance().getRoomId();
+        if (roomId == null)
+            return;
+
+        // Clear existing mock channels
+        voiceChannels.clear();
+        textChannels.clear();
+
+        if (com.saferoom.client.ClientMenu.roomClient != null) {
+            try {
+                var response = com.saferoom.client.ClientMenu.roomClient.listChannels(roomId);
+                var channels = response.getChannelsList();
+                System.out.println("[ServerController] Loading " + channels.size() + " channels via RPC");
+
+                for (var ch : channels) {
+                    switch (ch.getType()) {
+                        case "VOICE":
+                            voiceChannels.add(new Channel(ch.getChannelId(), ch.getName(), "voice", false));
+                            break;
+                        case "TEXT":
+                            textChannels.add(new Channel(ch.getChannelId(), ch.getName(), "text", false));
+                            break;
+                        case "FILE":
+                            // TODO: Add file channels support
+                            break;
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("[ServerController] Failed to load channels via RPC: " + e.getMessage());
+            }
+        }
+
+        // If no channels exist, create default ones handled by logic elsewhere or UI
+        // remains empty
+        if (voiceChannels.isEmpty() && textChannels.isEmpty()) {
+            System.out.println("[ServerController] No channels found via RPC.");
+        }
+    }
+
+    private void updateMembersFromPresence(java.util.List<RoomPeer> peers) {
+        System.out.println("[ServerController] Updating members from presence: " + peers.size() + " peers");
+
+        // Clear existing users
+        serverUsers.clear();
+
+        // Convert RoomPeer to User objects
+        for (RoomPeer peer : peers) {
+            boolean isOnline = true; // Presence = online
+            String username = peer.getNodeId();
+            String status = "Online";
+            String role = "Member"; // TODO: Get from room membership
+            String roleIcon = "";
+            String activity = "Connected";
+
+            serverUsers.add(new User(peer.getNodeId(), username, status, role, roleIcon, isOnline, activity));
+        }
+
+        // If no peers yet, add at least the current user
+        if (serverUsers.isEmpty()) {
+            String currentUser = com.saferoom.gui.service.ChatService.getInstance().getCurrentUsername();
+            if (currentUser != null) {
+                serverUsers.add(new User(currentUser, currentUser, "Online", "Member", "", true, "Connected"));
+            }
+        }
+
+        // Refresh the UI
+        populateUsers();
+    }
+
     private void initializeMockData() {
         // Create mock users
         serverUsers.add(new User("1", "Username", "Online", "Owner", "fas-crown", true, "Working on project"));
@@ -962,20 +1167,54 @@ public class ServerController implements Initializable {
         currentChannelTopic.setText(topic);
         messageTextField.setPromptText("Message #" + channelName);
 
-        // Clear and populate with mock messages
-        // Clear and populate with mock messages
+        // Sprint 12: Find channel ID and load messages from DB
         messagesListView.getItems().clear();
-        messagesListView.getItems().addAll(
-                new Message("Welcome to the " + channelName + " channel!", "Alice Cooper", "A"),
-                new Message("Thanks for setting this up", "Bob Smith", "B"),
-                new Message("Looking forward to collaborating here", "Carol Johnson", "C"),
-                new Message("Great to have a secure space for our discussions", "David Wilson", "D"));
+        currentChannelId = findChannelIdByName(channelName);
+
+        if (currentChannelId != null) {
+            // Sprint 14: Load messages via RPC
+            if (com.saferoom.client.ClientMenu.roomClient != null) {
+                try {
+                    var response = com.saferoom.client.ClientMenu.roomClient.getMessages(currentChannelId, 50);
+                    var messages = response.getMessagesList();
+                    System.out.println("[Messages] Loading " + messages.size() + " messages via RPC");
+                    for (var msg : messages) {
+                        String sender = msg.getSenderUsername();
+                        String avatar = sender.isEmpty() ? "?" : sender.substring(0, 1).toUpperCase();
+                        messagesListView.getItems().add(new Message(msg.getContent(), sender, avatar));
+                    }
+                } catch (Exception e) {
+                    System.err.println("[Messages] Failed to load messages via RPC: " + e.getMessage());
+                }
+            } else {
+                // Fallback to mock data or empty if RPC not available
+                // For now, doing nothing effectively leaves it empty, which is correct until
+                // messages arrive
+            }
+        }
+
+        // If no messages loaded, show a welcome message
+        if (messagesListView.getItems().isEmpty()) {
+            messagesListView.getItems().add(
+                    new Message("Welcome to #" + channelName + "! Start the conversation.", "System", "S"));
+        }
 
         showTextChatView();
         updateChannelSelection();
 
         // Clear notification badges for this channel
         clearChannelNotifications(channelName);
+    }
+
+    // Sprint 12: Find channel ID by name from current room's channels
+    private String findChannelIdByName(String channelName) {
+        for (Channel ch : textChannels) {
+            if (ch.getName().equalsIgnoreCase(channelName) ||
+                    ch.getName().equalsIgnoreCase(channelName.toLowerCase().replace(" ", "-"))) {
+                return ch.getId();
+            }
+        }
+        return null;
     }
 
     private void joinVoiceChannel(String channelName, String iconLiteral) {
@@ -1128,6 +1367,22 @@ public class ServerController implements Initializable {
         // Create and add the message
         Message newMessage = new Message(messageText, actualUsername, avatarChar);
         messagesListView.getItems().add(newMessage);
+
+        // Sprint 14: Persist message via RPC
+        if (currentChannelId != null && com.saferoom.client.ClientMenu.roomClient != null) {
+            try {
+                var response = com.saferoom.client.ClientMenu.roomClient.sendMessageToChannel(currentChannelId,
+                        actualUsername, messageText);
+                if (response.getSuccess()) {
+                    System.out
+                            .println("[Messages] Saved message via RPC: " + response.getSavedMessage().getMessageId());
+                } else {
+                    System.err.println("[Messages] RPC failed: " + response.getMessage());
+                }
+            } catch (Exception e) {
+                System.err.println("[Messages] Failed to save message via RPC: " + e.getMessage());
+            }
+        }
 
         // Clear the input field
         messageTextField.clear();

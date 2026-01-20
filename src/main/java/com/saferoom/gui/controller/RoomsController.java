@@ -11,6 +11,10 @@ import javafx.scene.layout.VBox;
 import javafx.scene.layout.FlowPane;
 import javafx.scene.layout.StackPane;
 import org.kordamp.ikonli.javafx.FontIcon;
+import com.saferoom.client.ClientMenu;
+import com.saferoom.rooms.client.logic.DataFSM;
+import com.saferoom.rooms.client.ActiveRoomSession;
+import com.saferoom.rooms.grpc.*;
 
 import java.net.URL;
 import java.util.ResourceBundle;
@@ -18,11 +22,13 @@ import java.util.ResourceBundle;
 public class RoomsController implements Initializable {
 
     private static class RoomData {
+        String id;
         String name;
         boolean isPrivate;
         boolean isCustom;
 
-        public RoomData(String name, boolean isPrivate, boolean isCustom) {
+        public RoomData(String id, String name, boolean isPrivate, boolean isCustom) {
+            this.id = id;
             this.name = name;
             this.isPrivate = isPrivate;
             this.isCustom = isCustom;
@@ -42,8 +48,41 @@ public class RoomsController implements Initializable {
             filterRooms(newValue);
         });
 
-        // Setup room card click handlers
-        setupRoomHandlers();
+        // Clear any static/mock rooms defined in FXML
+        if (hubListContainer != null) {
+            hubListContainer.getChildren().clear();
+        }
+
+        // Setup room card click handlers (for any pre-existing? No, we cleared them)
+        // setupRoomHandlers(); // No longer needed if we clear list
+
+        // Load rooms from server
+        refreshRooms();
+    }
+
+    private void refreshRooms() {
+        if (ClientMenu.roomClient == null)
+            return;
+
+        try {
+            javafx.application.Platform.runLater(() -> {
+                if (hubListContainer != null)
+                    hubListContainer.getChildren().clear();
+            });
+
+            var response = ClientMenu.roomClient.listRooms("");
+            for (var room : response.getRoomsList()) {
+                String id = room.getRoomId();
+                String name = room.getName();
+                boolean isPrivate = room.getIsPrivate();
+                // Create card for each room
+                javafx.application.Platform.runLater(() -> {
+                    addRoomCard(id, name, isPrivate, null); // Null image for now
+                });
+            }
+        } catch (Exception e) {
+            System.err.println("Error listing rooms: " + e.getMessage());
+        }
     }
 
     private void filterRooms(String searchText) {
@@ -106,6 +145,14 @@ public class RoomsController implements Initializable {
         }
     }
 
+    // Helper to get RoomData safely
+    private RoomData getRoomData(VBox roomCard) {
+        if (roomCard.getUserData() instanceof RoomData) {
+            return (RoomData) roomCard.getUserData();
+        }
+        return null; // Should ideally not happen for real rooms
+    }
+
     private boolean isActionButtonClick(Object target) {
         // Check if the click target is an action button or its child elements
         if (target instanceof Node) {
@@ -121,35 +168,73 @@ public class RoomsController implements Initializable {
     }
 
     private void navigateToRoom(VBox roomCard) {
-        // Get room name for navigation
-        Label roomNameLabel = findRoomNameLabel(roomCard);
-        if (roomNameLabel != null) {
-            String roomName = roomNameLabel.getText();
-            System.out.println("Navigating to room: " + roomName);
+        // Get room data first
+        RoomData data = getRoomData(roomCard);
+        String roomId = null;
+        String roomName = "Unknown Room";
+        boolean isPrivate = false;
+        boolean isCustom = false;
 
-            // Get room data if available
-            boolean isPrivate = false;
-            boolean isCustom = false;
+        if (data != null) {
+            roomId = data.id;
+            roomName = data.name;
+            isPrivate = data.isPrivate;
+            isCustom = data.isCustom;
+        } else {
+            // Fallback to label for legacy/mock
+            Label roomNameLabel = findRoomNameLabel(roomCard);
+            if (roomNameLabel != null) {
+                roomName = roomNameLabel.getText();
+                roomId = roomName; // Use name as ID for fallback
+            }
+        }
 
-            if (roomCard.getUserData() instanceof RoomData) {
-                RoomData data = (RoomData) roomCard.getUserData();
-                isPrivate = data.isPrivate;
-                isCustom = data.isCustom;
-            } else {
-                // Check for mock data logic or assume default
-                // For the hardcoded rooms in FXML, we can check names or just assume
-                // public/mock
-                if (roomName.contains("Defense") || roomName.contains("Sentry")) {
-                    isPrivate = true;
+        System.out.println("Navigating to room: " + roomName + " (ID: " + roomId + ")");
+
+        if (roomId == null)
+            return;
+
+        // [Rooms v1] Start DataFSM for this room
+        try {
+            // Using username as nodeId for v1 PoC
+            String nodeId = com.saferoom.gui.service.ChatService.getInstance().getCurrentUsername();
+            if (nodeId == null)
+                nodeId = "unknown-user";
+
+            if (ClientMenu.roomClient != null) {
+                System.out.println("[Rooms] Joining Room " + roomName + " [" + roomId + "] as " + nodeId);
+
+                // 1. Join via RPC (Persistence + Membership)
+                // TODO: Get real PubKey
+                var joinResp = ClientMenu.roomClient.joinRoom(roomId, nodeId, "dummy-pub-key");
+
+                if (!joinResp.getSuccess()) {
+                    System.err.println("Failed to join room: " + joinResp.getMessage());
+                    // TODO: Show Error
+                    return;
                 }
-            }
 
-            // Navigate to ServerView
-            if (MainController.getInstance() != null) {
-                MainController.getInstance().loadServerView(roomName, getRoomIcon(roomCard), isPrivate, isCustom);
-            } else {
-                System.err.println("MainController instance is null. Cannot load ServerView.");
+                System.out.println("[Rooms] Starting DataFSM for " + roomName);
+
+                // Sprint 7: Use Real Native WebRTC Manager
+                com.saferoom.rooms.client.logic.RoomWebRTCManager webRTCManager = new com.saferoom.rooms.client.logic.RoomWebRTCManagerImpl();
+
+                DataFSM fsm = new DataFSM(roomId, nodeId, ClientMenu.roomClient, webRTCManager);
+                fsm.start();
+
+                // Sprint 10: Store FSM in ActiveRoomSession for ServerController access
+                ActiveRoomSession.getInstance().setActiveSession(roomId, roomName, fsm);
             }
+        } catch (Exception e) {
+            System.err.println("Failed to start Rooms v1 FSM: " + e.getMessage());
+            e.printStackTrace();
+        }
+
+        // Navigate to ServerView
+        if (MainController.getInstance() != null) {
+            MainController.getInstance().loadServerView(roomName, getRoomIcon(roomCard), isPrivate, isCustom);
+        } else {
+            System.err.println("MainController instance is null. Cannot load ServerView.");
         }
     }
 
@@ -181,7 +266,8 @@ public class RoomsController implements Initializable {
                         for (Node actionNode : actionsBox.getChildren()) {
                             if (actionNode instanceof Button) {
                                 Button actionBtn = (Button) actionNode;
-                                setupActionButtonHandler(actionBtn);
+                                // Pass roomCard directly to avoid fragile parent traversal
+                                setupActionButtonHandler(actionBtn, roomCard);
                             }
                         }
                     }
@@ -190,14 +276,24 @@ public class RoomsController implements Initializable {
         }
     }
 
-    private void setupActionButtonHandler(Button actionBtn) {
+    private void setupActionButtonHandler(Button actionBtn, VBox roomCard) {
         actionBtn.setOnAction(event -> {
+            String nodeId = com.saferoom.gui.service.ChatService.getInstance().getCurrentUsername();
+            if (nodeId == null)
+                nodeId = "unknown-user";
+
+            RoomData data = getRoomData(roomCard);
+            String roomId = (data != null && data.id != null) ? data.id : "mock-room-id";
+
             if (actionBtn.getStyleClass().contains("voice-quick")) {
-                System.out.println("Voice action clicked");
-                // Add voice connection logic here
+                System.out.println("Voice action clicked for " + nodeId + " in room " + roomId);
+                if (ClientMenu.roomClient != null) {
+                    ClientMenu.roomClient.joinVoice(roomId, nodeId);
+                }
             } else if (actionBtn.getStyleClass().contains("chat-quick")) {
                 System.out.println("Chat action clicked");
-                // Add chat navigation logic here
+                // Trigger navigation (which starts FSM)
+                navigateToRoom(roomCard);
             }
         });
     }
@@ -266,8 +362,30 @@ public class RoomsController implements Initializable {
 
                 System.out.println("Creating new room: " + roomName + ", Private: " + isPrivate);
 
-                // Add the new room card to the UI
-                addRoomCard(roomName, isPrivate, roomImage);
+                // Call Server RPC
+                if (ClientMenu.roomClient != null) {
+                    try {
+                        String ownerId = com.saferoom.gui.service.ChatService.getInstance().getCurrentUsername();
+                        if (ownerId == null)
+                            ownerId = "unknown";
+
+                        var response = ClientMenu.roomClient.createRoom(roomName,
+                                ownerId, isPrivate);
+                        if (response.getSuccess()) {
+                            System.out.println("Room created successfully: " + response.getMessage());
+                            // Add the new room card to the UI
+                            addRoomCard(response.getRoom().getRoomId(), roomName, isPrivate, roomImage);
+                        } else {
+                            System.err.println("Failed to create room: " + response.getMessage());
+                            // TODO: Show error dialog
+                        }
+                    } catch (Exception e) {
+                        System.err.println("RPC Error creating room: " + e.getMessage());
+                        e.printStackTrace();
+                    }
+                } else {
+                    System.err.println("RoomClient is null, cannot create room.");
+                }
             }
 
         } catch (java.io.IOException e) {
@@ -275,7 +393,7 @@ public class RoomsController implements Initializable {
         }
     }
 
-    private void addRoomCard(String roomName, boolean isPrivate, javafx.scene.image.Image roomImage) {
+    private void addRoomCard(String roomId, String roomName, boolean isPrivate, javafx.scene.image.Image roomImage) {
         if (hubListContainer == null)
             return;
 
@@ -367,11 +485,11 @@ public class RoomsController implements Initializable {
                 navigateToRoom(roomCard);
             }
         });
-        setupActionButtonHandler(voiceBtn);
-        setupActionButtonHandler(chatBtn);
+        setupActionButtonHandler(voiceBtn, roomCard);
+        setupActionButtonHandler(chatBtn, roomCard);
 
         // Store room data
-        roomCard.setUserData(new RoomData(roomName, isPrivate, true));
+        roomCard.setUserData(new RoomData(roomId, roomName, isPrivate, true));
 
         hubListContainer.getChildren().add(0, roomCard); // Add to top
     }

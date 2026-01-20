@@ -357,6 +357,9 @@ public class VideoPanel extends Canvas {
     private FrameProcessor buildFrameProcessor() {
         lastFrameTimestamp = System.nanoTime();
         System.out.println("[VideoPanel] Building new FrameProcessor...");
+
+        // Pass a backpressure predicate: "Only process if the UI has freed the previous
+        // frame"
         return new FrameProcessor(result -> {
             framesSetToLatest++;
             // Log every 100 frames set to latestFrame
@@ -373,7 +376,7 @@ public class VideoPanel extends Canvas {
             if (dropped != null) {
                 dropped.release();
             }
-        });
+        }, FrameProcessor.DEFAULT_QUEUE_CAPACITY, frame -> latestFrame.get() == null);
     }
 
     private void closeFrameProcessor() {

@@ -25,16 +25,26 @@ import com.saferoom.gui.utils.UserSession;
 public class LoginController {
 
     // --- FXML Değişkenleri ---
-    @FXML private VBox rootPane;
-    @FXML private TextField usernameField;
-    @FXML private PasswordField passwordField;
-    @FXML private CheckBox rememberMe;
-    @FXML private Hyperlink forgotPasswordLink;
-    @FXML private Button signInButton;
-    @FXML private JFXButton googleLoginButton;
-    @FXML private JFXButton githubLoginButton;
-    @FXML private Hyperlink signUpLink;
-    @FXML private Button closeButton; // YENİ: Kapatma butonu eklendi
+    @FXML
+    private VBox rootPane;
+    @FXML
+    private TextField usernameField;
+    @FXML
+    private PasswordField passwordField;
+    @FXML
+    private CheckBox rememberMe;
+    @FXML
+    private Hyperlink forgotPasswordLink;
+    @FXML
+    private Button signInButton;
+    @FXML
+    private JFXButton googleLoginButton;
+    @FXML
+    private JFXButton githubLoginButton;
+    @FXML
+    private Hyperlink signUpLink;
+    @FXML
+    private Button closeButton; // YENİ: Kapatma butonu eklendi
 
     private double xOffset = 0;
     private double yOffset = 0;
@@ -108,7 +118,6 @@ public class LoginController {
             return;
         }
 
-
         try {
             String loginResult = ClientMenu.Login(username, password);
 
@@ -117,7 +126,7 @@ public class LoginController {
                 showError("Connection error: No response from server");
                 return;
             }
-            
+
             // Check for all error states
             if (loginResult.equals("N_REGISTER")) {
                 showError("User not registered!");
@@ -173,7 +182,7 @@ public class LoginController {
 
                 traditionalUser.setProvider("Traditional");
                 UserSession.getInstance().setCurrentUser(traditionalUser, "traditional");
-                
+
                 // NEW: Initialize Persistent Storage with password
                 try {
                     System.out.println("[Login] Initializing persistent storage...");
@@ -186,7 +195,8 @@ public class LoginController {
                 }
 
                 // Stop any existing heartbeat service before starting a new one
-                com.saferoom.gui.utils.HeartbeatService heartbeatService = com.saferoom.gui.utils.HeartbeatService.getInstance();
+                com.saferoom.gui.utils.HeartbeatService heartbeatService = com.saferoom.gui.utils.HeartbeatService
+                        .getInstance();
                 if (heartbeatService.isRunning()) {
                     System.out.println("🛑 Stopping existing heartbeat service before starting new one");
                     heartbeatService.stopHeartbeat();
@@ -205,12 +215,17 @@ public class LoginController {
                 Platform.runLater(() -> {
                     new Thread(() -> {
                         try {
-                            boolean registered = com.saferoom.client.ClientMenu.registerP2PUser(traditionalUser.getName());
+                            boolean registered = com.saferoom.client.ClientMenu
+                                    .registerP2PUser(traditionalUser.getName());
                             if (registered) {
-                                System.out.println("✅ P2P registration successful for user: " + traditionalUser.getName());
+                                System.out.println(
+                                        "✅ P2P registration successful for user: " + traditionalUser.getName());
 
                                 // ✅ P2P registered - WebRTC will handle NAT traversal automatically
                                 System.out.println("✅ P2P ready for user: " + traditionalUser.getName());
+
+                                // Initialize Rooms v1 Connection
+                                com.saferoom.client.ClientMenu.initRoomsV1();
                             } else {
                                 System.err.println("⚠️ P2P registration failed for user: " + traditionalUser.getName());
                             }
@@ -226,7 +241,8 @@ public class LoginController {
                     Stage mainStage = new Stage();
                     mainStage.initStyle(StageStyle.TRANSPARENT);
                     mainStage.setTitle("SafeRoom");
-                    Parent mainRoot = FXMLLoader.load(Objects.requireNonNull(getClass().getResource("/view/MainView.fxml")));
+                    Parent mainRoot = FXMLLoader
+                            .load(Objects.requireNonNull(getClass().getResource("/view/MainView.fxml")));
                     Scene mainScene = new Scene(mainRoot, 1280, 800);
                     mainScene.setFill(javafx.scene.paint.Color.TRANSPARENT);
                     String cssPath = "/styles/styles.css";
@@ -321,7 +337,8 @@ public class LoginController {
 
             Stage forgotPasswordStage = new Stage();
             forgotPasswordStage.initStyle(StageStyle.TRANSPARENT);
-            Parent root = FXMLLoader.load(Objects.requireNonNull(getClass().getResource("/view/ForgotPasswordView.fxml")));
+            Parent root = FXMLLoader
+                    .load(Objects.requireNonNull(getClass().getResource("/view/ForgotPasswordView.fxml")));
 
             root.setOnMousePressed(event -> {
                 xOffset = event.getSceneX();
@@ -347,6 +364,7 @@ public class LoginController {
             showError("Failed to load forgot password screen.");
         }
     }
+
     private void handleGoogleLogin() {
         System.out.println("Starting Google OAuth...");
 
@@ -414,6 +432,9 @@ public class LoginController {
 
                             // ✅ P2P registered - WebRTC will handle NAT traversal automatically
                             System.out.println("✅ P2P ready for OAuth user: " + userInfo.getName());
+
+                            // Initialize Rooms v1 Connection
+                            com.saferoom.client.ClientMenu.initRoomsV1();
                         } else {
                             System.err.println("⚠️ P2P registration failed for OAuth user: " + userInfo.getName());
                         }
@@ -477,8 +498,14 @@ public class LoginController {
             showError("Ana sayfa yüklenemedi.");
         }
     }
-    private void showAlert(String title, String content) { AlertUtils.showInfo(title, content); }
-    private void showError(String message) { AlertUtils.showError("Hata", message); }
+
+    private void showAlert(String title, String content) {
+        AlertUtils.showInfo(title, content);
+    }
+
+    private void showError(String message) {
+        AlertUtils.showError("Hata", message);
+    }
 
     // Remember Me Helper Methods
     private void loadSavedCredentials() {

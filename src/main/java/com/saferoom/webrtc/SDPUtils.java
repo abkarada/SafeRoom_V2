@@ -228,15 +228,85 @@ public class SDPUtils {
     // Pattern to match packetization-mode in fmtp lines
     private static final Pattern PACKETIZATION_MODE_PATTERN = Pattern.compile("(packetization-mode=)(\\d)");
 
+    // Pattern to match High Profile H.264 (64xxxx)
+    private static final Pattern HIGH_PROFILE_PATTERN = Pattern.compile("profile-level-id=64[0-9a-fA-F]{4}");
+
     /**
      * ═══════════════════════════════════════════════════════════════════
-     * SDP PROFILE MUNGING: The Gatekeeper (STRICT MODE)
+     * SMART HIGH PROFILE FIX: Preserve quality while ensuring compatibility
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * Ensures H.264 High Profile includes packetization-mode=1 for cross-platform
+     * compatibility. Unlike enforceBaselineH264Profile() which destructively replaces
+     * all H.264 profiles with Constrained Baseline, this method:
+     *
+     * 1. PRESERVES High Profile quality when possible
+     * 2. ADDS packetization-mode=1 if missing (enables FU-A fragmentation)
+     * 3. FIXES packetization-mode=0 -> mode=1 (Mac VideoToolbox requirement)
+     *
+     * This is the preferred approach for Mac compatibility as it maintains
+     * encoding quality while ensuring proper packetization for cross-platform delivery.
+     *
+     * Transformations:
+     * - High Profile missing mode → append ;packetization-mode=1
+     * - Any profile with mode=0 → change to mode=1
+     * - Already has mode=1 → no change
+     *
+     * @param sdp The SDP to process
+     * @return SDP with H.264 packetization-mode=1 enforced
+     */
+    public static String enforceHighProfilePacketization(String sdp) {
+        if (sdp == null)
+            return null;
+
+        StringBuilder result = new StringBuilder();
+        String[] lines = sdp.split("\r\n");
+        boolean modified = false;
+
+        for (String line : lines) {
+            String processedLine = line;
+
+            // Only process fmtp lines with profile-level-id (H.264 codec parameters)
+            if (line.startsWith("a=fmtp:") && line.contains("profile-level-id=")) {
+
+                // Check if packetization-mode exists
+                Matcher modeMatcher = PACKETIZATION_MODE_PATTERN.matcher(line);
+                if (modeMatcher.find()) {
+                    // Mode exists - ensure it's mode=1
+                    String currentMode = modeMatcher.group(2);
+                    if (!"1".equals(currentMode)) {
+                        processedLine = modeMatcher.replaceFirst("$1" + "1");
+                        System.out.printf("[SDPUtils] PACKETIZATION MODE FIX: %s → 1%n", currentMode);
+                        modified = true;
+                    }
+                } else {
+                    // Mode missing - append packetization-mode=1
+                    processedLine = line + ";packetization-mode=1";
+                    System.out.println("[SDPUtils] PACKETIZATION MODE ADDED: ;packetization-mode=1");
+                    modified = true;
+                }
+            }
+
+            result.append(processedLine).append("\r\n");
+        }
+
+        if (modified) {
+            System.out.println("[SDPUtils] Smart High Profile munging applied - quality preserved");
+        }
+
+        return result.toString();
+    }
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * SDP PROFILE MUNGING: The Gatekeeper (STRICT MODE) - Mac Fallback
      * ═══════════════════════════════════════════════════════════════════
      *
      * Forces all H.264 fmtp lines to use STRICTLY Constrained Baseline (42e01f).
      * Also enforces packetization-mode=1 for macOS VideoToolbox compatibility.
-     * This prevents the native VideoToolbox encoder from receiving a profile
-     * it cannot handle during mid-session renegotiation.
+     *
+     * CRITICAL: This is the nuclear option for Mac safety. Use enforceHighProfilePacketization()
+     * first to try preserving High Profile. This method sacrifices quality for guaranteed compatibility.
      *
      * CRITICAL: 42001f (Baseline) also causes freezes on Mac!
      * Only 42e01f (Constrained Baseline) is safe.

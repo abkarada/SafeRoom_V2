@@ -448,6 +448,8 @@ public class WebRTCSignalingClient {
 
             // 🔧 FIX: Use thread-safe safeSend!
             if (safeSend(signal)) {
+                // System.out.println("[SignalingClient] 📤 Sending ICE candidate via stream");
+                // // SİLİNDİ: CPU Optimize
                 return true;
             } else {
                 System.err.println("[SignalingClient] ❌ Stream not active for ICE");
@@ -481,16 +483,18 @@ public class WebRTCSignalingClient {
             StreamObserver<WebRTCSignal> streamIn = new StreamObserver<WebRTCSignal>() {
                 @Override
                 public void onNext(WebRTCSignal signal) {
-                    System.out.printf("[SignalingClient] 📨 Received signal: %s from %s (to: %s, callId: %s)%n",
-                            signal.getType(), signal.getFrom(), signal.getTo(), signal.getCallId());
+                    // CPU OPTIMIZASYONU: Çok sık gelen sinyalleri loglamayı kapattık (ICE, PING vs)
+                    if (signal.getType() != SignalType.ICE_CANDIDATE) {
+                        System.out.printf("[SignalingClient] 📨 Received signal: %s from %s (callId: %s)%n",
+                                signal.getType(), signal.getFrom(), signal.getCallId());
+                    }
 
                     // 1. Check signal-specific handlers (for group calls)
                     Consumer<WebRTCSignal> handler = signalHandlers.get(signal.getType());
                     if (handler != null) {
                         try {
                             handler.accept(signal);
-                            System.out.printf("[SignalingClient] ✅ Signal handled by specific handler: %s%n",
-                                    signal.getType());
+                            // Detay log kapalı
                         } catch (Exception e) {
                             System.err.printf("[SignalingClient] ❌ Error in signal handler: %s%n", e.getMessage());
                             e.printStackTrace();
@@ -502,14 +506,13 @@ public class WebRTCSignalingClient {
                     if (onIncomingSignalCallback != null) {
                         try {
                             onIncomingSignalCallback.accept(signal);
-                            System.out.printf("[SignalingClient] ✅ Signal forwarded to CallManager: %s%n",
-                                    signal.getType());
                         } catch (Exception e) {
                             System.err.printf("[SignalingClient] ❌ Error in callback: %s%n", e.getMessage());
                             e.printStackTrace();
                         }
                     } else {
-                        System.err.println("[SignalingClient] ⚠️ No handler for signal: " + signal.getType());
+                        // System.err.println("[SignalingClient] ⚠️ No handler for signal: " +
+                        // signal.getType());
                     }
                 }
 

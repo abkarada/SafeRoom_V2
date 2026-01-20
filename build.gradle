@@ -158,8 +158,9 @@ dependencies {
     
     // Testing
     testImplementation "org.junit.jupiter:junit-jupiter:${versions.junit}"
-    testImplementation "org.mockito:mockito-core:5.8.0"
-    testImplementation "org.mockito:mockito-junit-jupiter:5.8.0"
+    testImplementation "org.mockito:mockito-core:5.11.0"
+    testImplementation "org.mockito:mockito-inline:5.2.0"
+    testImplementation "org.mockito:mockito-junit-jupiter:5.11.0"
     
     // ───────────────────────────────────────────────────────────────────────────
     // PLATFORM-SPECIFIC DEPENDENCIES
@@ -345,8 +346,8 @@ tasks.withType(JavaExec).configureEach {
     
     // Tuning Young Generation (Less aggressive to prevent 20ms+ Evac pauses)
     jvmArgs += '-XX:+UnlockExperimentalVMOptions'
-    jvmArgs += '-XX:G1NewSizePercent=20'       // Was 30 - Reduced to lower pause impact
-    jvmArgs += '-XX:G1MaxNewSizePercent=40'    // Was 60 - Cap burst size
+    jvmArgs += '-XX:G1NewSizePercent=40'       // Was 20 - Increased to 40 to handle video frame allocations
+    jvmArgs += '-XX:G1MaxNewSizePercent=60'    // Was 40 - Increased to 60 to allow bursts
     jvmArgs += '-XX:InitiatingHeapOccupancyPercent=45'
     jvmArgs += '-XX:+DisableExplicitGC'
     
@@ -415,6 +416,150 @@ tasks.withType(JavaExec).configureEach {
     jvmArgs += '-XX:+UseCompressedClassPointers'  // Compressed class pointers
     jvmArgs += '-XX:+OptimizeStringConcat'        // String concat optimization
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NATIVE BUILD TASK (Automated C++ Compilation)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Automatically compiles the NativeVideoEncoder C++ code for the host platform.
+ * Supports: G++ (Linux/MinGW) and Clang (macOS)
+ */
+task compileNative {
+    group = 'build'
+    description = 'Compiles native video encoder library using CMake'
+    
+    // Inputs/Outputs for incremental build
+    def sourceDir = file("src/main/native")
+    inputs.dir sourceDir
+    
+    def platformDir = isWindows ? "windows-x86_64" : (isMacOS ? (isArm ? "macos-aarch64" : "macos-x86_64") : "linux-x86_64")
+    def outputDir = file("src/main/resources/natives/${platformDir}")
+    
+    // Expected output library name
+    def libName = isWindows ? "native_encoder.dll" : (isMacOS ? "libnative_encoder.dylib" : "libnative_encoder.so")
+    def finalOutputFile = file("${outputDir}/${libName}")
+    
+    outputs.file finalOutputFile
+
+    doLast {
+        println "🔨 Building native library via CMake for ${platformDir}..."
+        
+        def buildDir = file("build/native_build")
+        buildDir.mkdirs()
+        
+        // Ensure CMake is installed
+        try {
+            def checkCmake = isWindows ? ['cmd', '/c', 'cmake --version'] : ['cmake', '--version']
+            def proc = checkCmake.execute()
+            proc.waitFor()
+            if (proc.exitValue() != 0) {
+                throw new GradleException("CMake not found. Please install CMake to build native components.")
+            }
+        } catch (IOException e) {
+             throw new GradleException("CMake not found. Please install CMake to build native components.")
+        }
+
+        // 1. Configure
+        println "   → Configuring CMake..."
+
+        // Resolve JAVA_HOME reliably (toolchain-aware)
+        def javaHome = System.getenv("JAVA_HOME")
+        if (javaHome == null || javaHome.trim().isEmpty()) {
+            // Ask Gradle toolchain where javac is, then derive JAVA_HOME
+            def javacPath = javaToolchains.launcherFor {
+                languageVersion = JavaLanguageVersion.of(21)
+            }.get().metadata.installationPath.asFile.absolutePath
+            javaHome = javacPath
+        }
+
+        // Normalize all paths to forward slashes for CMake cross-platform compatibility
+        // CMake handles forward slashes on all platforms (Windows/Linux/Mac)
+        // but backslashes on Windows cause "Invalid character escape" errors
+        def javaHomeCMake = javaHome.replace('\\', '/')
+        def javaInclude = "${javaHomeCMake}/include"
+        def javaInclude2 = isWindows ? "${javaHomeCMake}/include/win32" :
+                  (isMacOS ? "${javaHomeCMake}/include/darwin" : "${javaHomeCMake}/include/linux")
+
+    // Quick sanity checks (fail fast with clear message)
+    if (!file("${javaInclude}/jni.h").exists()) {
+        throw new GradleException("JNI header not found: ${javaInclude}/jni.h (JAVA_HOME resolved as: ${javaHome})")
+    }
+    if (!file(javaInclude2).exists()) {
+        throw new GradleException("JNI platform include dir not found: ${javaInclude2} (JAVA_HOME resolved as: ${javaHome})")
+    }
+
+    // Normalize build directory path for CMake
+    def buildDirCMake = buildDir.absolutePath.replace('\\', '/')
+
+    exec {
+        workingDir projectDir
+        commandLine 'cmake',
+            '-S', 'src/main/native',
+            '-B', buildDirCMake,
+            "-DJAVA_HOME=${javaHomeCMake}",
+            "-DJAVA_INCLUDE_PATH=${javaInclude}",
+            "-DJAVA_INCLUDE_PATH2=${javaInclude2}",
+            '-DCMAKE_BUILD_TYPE=Release'
+        }
+
+        // 2. Build
+        println "   → Compiling..."
+        exec {
+            workingDir projectDir
+            commandLine 'cmake', '--build', buildDirCMake, '--config', 'Release'
+        }
+        
+        // 3. Find and Copy Artifact
+        // CMake build output location varies by generator (Debug/Release folder on Windows, root on Linux)
+        def possiblePaths = [
+            "${buildDir}/Release/${libName}",       // MSVC/Windows
+            "${buildDir}/${libName}",               // Linux/Makefiles
+            "${buildDir}/lib${libName}",            // Some defaults
+            "${buildDir}/Release/lib${libName}"
+        ]
+        
+        // On Windows, library might be named without 'lib' prefix usually, but let's check exact matches
+        // CMakeLists specifies "native_encoder" target, so:
+        // Linux: libnative_encoder.so
+        // Windows: native_encoder.dll (Release/native_encoder.dll)
+        // Mac: libnative_encoder.dylib
+        
+        def builtFile = null
+        
+        // We need to look for the file recursively or check specific locations
+        // Let's use `find` approach if simple paths fail, or just check standard locations
+        
+        if (isWindows) {
+             if (file("${buildDir}/Release/${libName}").exists()) builtFile = file("${buildDir}/Release/${libName}")
+             else if (file("${buildDir}/${libName}").exists()) builtFile = file("${buildDir}/${libName}")
+        } else {
+             if (file("${buildDir}/${libName}").exists()) builtFile = file("${buildDir}/${libName}")
+        }
+        
+        if (builtFile == null || !builtFile.exists()) {
+             // Fallback search
+             builtFile = fileTree(buildDir).matching { include "**/${libName}" }.singleFile
+        }
+        
+        if (builtFile != null && builtFile.exists()) {
+            println "   → Copying ${builtFile.name} to resources..."
+            outputDir.mkdirs()
+            
+            copy {
+                from builtFile
+                into outputDir
+                rename { libName } // Ensure name matches expectation
+            }
+            println "✅ Native build complete."
+        } else {
+            throw new GradleException("Could not locate compiled native library '${libName}' in ${buildDir}")
+        }
+    }
+}
+
+// Hook into the build process
+processResources.dependsOn compileNative
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // UTILITY TASKS

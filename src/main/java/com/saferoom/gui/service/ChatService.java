@@ -1,6 +1,5 @@
 package com.saferoom.gui.service;
 
-
 import com.saferoom.chat.MessagePersister;
 import com.saferoom.chat.PersistentChatLoader;
 import com.saferoom.gui.model.FileAttachment;
@@ -42,11 +41,12 @@ public class ChatService {
     // Veri saklama alanı (eskiden kontrolcüdeydi)
     private final Map<String, ObservableList<Message>> channelMessages = new HashMap<>();
 
-    // DİKKAT: Bu, yeni bir mesaj geldiğinde bunu dinleyenleri haberdar eden sihirli kısımdır.
+    // DİKKAT: Bu, yeni bir mesaj geldiğinde bunu dinleyenleri haberdar eden sihirli
+    // kısımdır.
     private final ObjectProperty<Message> newMessageProperty = new SimpleObjectProperty<>();
 
     private final Map<Long, Message> activeFileTransfers = new ConcurrentHashMap<>();
-    
+
     // NEW: Persistence layer integration
     private MessagePersister messagePersister;
     private PersistentChatLoader chatLoader;
@@ -64,6 +64,7 @@ public class ChatService {
 
     /**
      * Set the current user's username (called by ClientMenu during initialization)
+     * 
      * @param username The current user's username
      */
     public void setCurrentUsername(String username) {
@@ -73,18 +74,19 @@ public class ChatService {
 
     /**
      * Get the current user's username
+     * 
      * @return The current user's username
      */
     public String getCurrentUsername() {
         return currentUsername;
     }
-    
+
     /**
      * Initialize persistent storage (NEW)
      * Call this after user login with their password
      * 
      * @param persister MessagePersister instance
-     * @param loader PersistentChatLoader instance
+     * @param loader    PersistentChatLoader instance
      */
     public void initializePersistence(MessagePersister persister, PersistentChatLoader loader) {
         this.messagePersister = persister;
@@ -92,21 +94,37 @@ public class ChatService {
         this.persistenceEnabled = true;
         System.out.printf("[ChatService] 💾 Persistence enabled for user: %s%n", currentUsername);
     }
-    
+
     /**
      * Load conversation history from disk (NEW)
      * Populates RAM ObservableList with persisted messages
      * 
      * @param remoteUsername Remote user to load history for
-     * @return java.util.concurrent.CompletableFuture<Integer> Number of messages loaded
+     * @return java.util.concurrent.CompletableFuture<Integer> Number of messages
+     *         loaded
      */
     public java.util.concurrent.CompletableFuture<Integer> loadConversationHistory(String remoteUsername) {
         if (!persistenceEnabled || chatLoader == null) {
             return java.util.concurrent.CompletableFuture.completedFuture(0);
         }
-        
+
         ObservableList<Message> messages = getMessagesForChannel(remoteUsername);
         return chatLoader.loadConversationHistory(remoteUsername, currentUsername, messages);
+    }
+
+    /**
+     * Load recent N messages for preview or initial view
+     */
+    public java.util.concurrent.CompletableFuture<java.util.List<Message>> loadRecentMessages(String remoteUsername,
+            int count) {
+        if (!persistenceEnabled || chatLoader == null) {
+            return java.util.concurrent.CompletableFuture.completedFuture(java.util.Collections.emptyList());
+        }
+        return chatLoader.loadRecentMessages(remoteUsername, currentUsername, count);
+    }
+
+    public PersistentChatLoader getPersistentLoader() {
+        return chatLoader;
     }
 
     /**
@@ -115,62 +133,61 @@ public class ChatService {
      * NEW: Automatically persists message to disk
      * 
      * @param channelId Sohbet kanalının ID'si
-     * @param text Gönderilecek mesaj metni
-     * @param sender Mesajı gönderen kullanıcı
+     * @param text      Gönderilecek mesaj metni
+     * @param sender    Mesajı gönderen kullanıcı
      */
     public void sendMessage(String channelId, String text, User sender) {
-        if (text == null || text.trim().isEmpty()) return;
+        if (text == null || text.trim().isEmpty())
+            return;
 
         Message newMessage = new Message(
-            text,
-            sender.getId(),
-            sender.getName().isEmpty() ? "" : sender.getName().substring(0, 1)
-        );
+                text,
+                sender.getId(),
+                sender.getName().isEmpty() ? "" : sender.getName().substring(0, 1));
         newMessage.setType(MessageType.TEXT);
         newMessage.setOutgoing(true);
 
         // Mesajı ilgili kanalın listesine ekle
         ObservableList<Message> messages = getMessagesForChannel(channelId);
         messages.add(newMessage);
-        
+
         // NEW: Persist to disk asynchronously
         if (persistenceEnabled && messagePersister != null) {
             System.out.printf("[ChatService] 💾 Persisting OUTGOING message to: %s%n", channelId);
             System.out.printf("[ChatService]    Message ID: %s%n", newMessage.getId());
-            System.out.printf("[ChatService]    Params: message=%s, remoteUser=%s, currentUser=%s%n", 
-                newMessage.getId(), channelId, currentUsername);
-            
+            System.out.printf("[ChatService]    Params: message=%s, remoteUser=%s, currentUser=%s%n",
+                    newMessage.getId(), channelId, currentUsername);
+
             messagePersister.persistMessageAsync(newMessage, channelId, currentUsername)
-                .thenRun(() -> {
-                    System.out.printf("[ChatService] ✅ OUTGOING message persisted successfully: %s%n", newMessage.getId());
-                })
-                .exceptionally(error -> {
-                    System.err.println("[ChatService] ❌ Failed to persist outgoing message: " + error.getMessage());
-                    error.printStackTrace();
-                    return null;
-                });
+                    .thenRun(() -> {
+                        System.out.printf("[ChatService] ✅ OUTGOING message persisted successfully: %s%n",
+                                newMessage.getId());
+                    })
+                    .exceptionally(error -> {
+                        System.err.println("[ChatService] ❌ Failed to persist outgoing message: " + error.getMessage());
+                        error.printStackTrace();
+                        return null;
+                    });
         } else {
-            System.err.printf("[ChatService] ⚠️ Persistence NOT enabled! persistenceEnabled=%s, persister=%s%n", 
-                persistenceEnabled, messagePersister);
+            System.err.printf("[ChatService] ⚠️ Persistence NOT enabled! persistenceEnabled=%s, persister=%s%n",
+                    persistenceEnabled, messagePersister);
         }
 
         // Try WebRTC DataChannel P2P messaging first
         boolean sentViaP2P = false;
-        
+
         // Check if we have active WebRTC DataChannel connection
-        com.saferoom.p2p.P2PConnectionManager p2pManager = 
-            com.saferoom.p2p.P2PConnectionManager.getInstance();
-        
+        com.saferoom.p2p.P2PConnectionManager p2pManager = com.saferoom.p2p.P2PConnectionManager.getInstance();
+
         if (p2pManager.hasActiveConnection(channelId)) {
             try {
                 System.out.printf("[Chat] 📡 Sending via WebRTC DataChannel to %s%n", channelId);
-                
-                java.util.concurrent.CompletableFuture<Boolean> future = 
-                    p2pManager.sendMessage(channelId, text);
-                
+
+                java.util.concurrent.CompletableFuture<Boolean> future = p2pManager.sendMessage(channelId, text);
+
                 // Wait for send completion (with timeout)
                 sentViaP2P = future.get(2, java.util.concurrent.TimeUnit.SECONDS);
-                
+
                 if (sentViaP2P) {
                     System.out.printf("[Chat] ✅ Message sent via WebRTC DataChannel to %s%n", channelId);
                 } else {
@@ -181,7 +198,7 @@ public class ChatService {
                 sentViaP2P = false;
             }
         }
-        
+
         if (!sentViaP2P) {
             System.out.printf("[Chat] 📡 No P2P connection with %s - would use server relay%n", channelId);
             // TODO: Implement server relay messaging
@@ -190,7 +207,7 @@ public class ChatService {
         // Update contact's last message (from me)
         try {
             com.saferoom.gui.service.ContactService.getInstance()
-                .updateLastMessage(channelId, text, true);
+                    .updateLastMessage(channelId, text, true);
         } catch (Exception e) {
             System.err.println("[Chat] Error updating contact last message: " + e.getMessage());
         }
@@ -201,6 +218,7 @@ public class ChatService {
 
     /**
      * Belirtilen kanalın mesaj listesini döndürür.
+     * 
      * @param channelId Sohbet kanalının ID'si
      * @return O kanala ait ObservableList<Message>
      */
@@ -212,7 +230,7 @@ public class ChatService {
     public ObjectProperty<Message> newMessageProperty() {
         return newMessageProperty;
     }
-    
+
     /**
      * P2P'den gelen mesajı al ve GUI'de göster
      * NEW: Automatically persists incoming message to disk
@@ -223,160 +241,158 @@ public class ChatService {
         System.out.printf("[Chat] 🔍 Stack trace:%n");
         for (StackTraceElement elem : Thread.currentThread().getStackTrace()) {
             if (elem.getClassName().contains("saferoom")) {
-                System.out.printf("    at %s.%s(%s:%d)%n", 
-                    elem.getClassName(), elem.getMethodName(), 
-                    elem.getFileName(), elem.getLineNumber());
+                System.out.printf("    at %s.%s(%s:%d)%n",
+                        elem.getClassName(), elem.getMethodName(),
+                        elem.getFileName(), elem.getLineNumber());
             }
         }
         System.out.println("═══════════════════════════════════════════════════════════════");
-        
+
         Message incomingMessage = new Message(
-            messageText,
-            sender,
-            sender.isEmpty() ? "?" : sender.substring(0, 1).toUpperCase()
-        );
+                messageText,
+                sender,
+                sender.isEmpty() ? "?" : sender.substring(0, 1).toUpperCase());
         incomingMessage.setType(MessageType.TEXT);
         incomingMessage.setOutgoing(false); // Incoming message
-        
+
         // Mesajı doğru channel'a ekle
         ObservableList<Message> messages = getMessagesForChannel(sender);
         messages.add(incomingMessage);
-        
+
         // NEW: Persist to disk asynchronously
         if (persistenceEnabled && messagePersister != null) {
             System.out.printf("[ChatService] 💾 Persisting INCOMING message from: %s%n", sender);
             System.out.printf("[ChatService]    Message ID: %s%n", incomingMessage.getId());
-            System.out.printf("[ChatService]    Params: message=%s, remoteUser=%s, currentUser=%s%n", 
-                incomingMessage.getId(), sender, currentUsername);
-            
+            System.out.printf("[ChatService]    Params: message=%s, remoteUser=%s, currentUser=%s%n",
+                    incomingMessage.getId(), sender, currentUsername);
+
             messagePersister.persistMessageAsync(incomingMessage, sender, currentUsername)
-                .thenRun(() -> {
-                    System.out.printf("[ChatService] ✅ INCOMING message persisted successfully: %s%n", incomingMessage.getId());
-                })
-                .exceptionally(error -> {
-                    System.err.println("[ChatService] ❌ Failed to persist incoming message: " + error.getMessage());
-                    error.printStackTrace();
-                    return null;
-                });
+                    .thenRun(() -> {
+                        System.out.printf("[ChatService] ✅ INCOMING message persisted successfully: %s%n",
+                                incomingMessage.getId());
+                    })
+                    .exceptionally(error -> {
+                        System.err.println("[ChatService] ❌ Failed to persist incoming message: " + error.getMessage());
+                        error.printStackTrace();
+                        return null;
+                    });
         } else {
-            System.err.printf("[ChatService] ⚠️ Persistence NOT enabled! persistenceEnabled=%s, persister=%s%n", 
-                persistenceEnabled, messagePersister);
+            System.err.printf("[ChatService] ⚠️ Persistence NOT enabled! persistenceEnabled=%s, persister=%s%n",
+                    persistenceEnabled, messagePersister);
         }
-        
+
         System.out.printf("[Chat] 📬 Updated contact last message for %s%n", sender);
         System.out.printf("[Chat] ✅ P2P message added to channel: %s%n", sender);
-        
-        // Update contact's last message (not from me - will increment unread if not active)
+
+        // Update contact's last message (not from me - will increment unread if not
+        // active)
         try {
-            com.saferoom.gui.service.ContactService contactService = 
-                com.saferoom.gui.service.ContactService.getInstance();
-            
+            com.saferoom.gui.service.ContactService contactService = com.saferoom.gui.service.ContactService
+                    .getInstance();
+
             // Add contact if doesn't exist
             if (!contactService.hasContact(sender)) {
                 contactService.addNewContact(sender);
             }
-            
+
             // Update last message (isFromMe = false)
             contactService.updateLastMessage(sender, messageText, false);
-            
+
             System.out.printf("[Chat] 📬 Updated contact last message for %s%n", sender);
-            
+
         } catch (Exception e) {
             System.err.println("[Chat] Error updating contact for P2P message: " + e.getMessage());
         }
-        
+
         // GUI'yi güncelle
         newMessageProperty.set(incomingMessage);
-        
+
         System.out.printf("[Chat] ✅ P2P message added to channel: %s%n", sender);
     }
-    
+
     /**
      * Dosya transfer işlemi başlat (P2P)
+     * 
      * @param targetUser Dosya gönderilecek kullanıcı
-     * @param filePath Gönderilecek dosyanın yolu
+     * @param filePath   Gönderilecek dosyanın yolu
      */
     public void sendFileMessage(String targetUser, java.nio.file.Path filePath, User sender) {
         if (targetUser == null || filePath == null) {
             System.err.println("[Chat] ❌ Invalid sendFile parameters");
             return;
         }
-        
-        System.out.printf("[Chat] 📁 Starting file transfer: %s -> %s%n", 
-            filePath.getFileName(), targetUser);
-        
+
+        System.out.printf("[Chat] 📁 Starting file transfer: %s -> %s%n",
+                filePath.getFileName(), targetUser);
+
         // Build UI placeholder before sending
         MessageType fileType = detectFileType(filePath);
         Image thumbnail = generateThumbnail(fileType, filePath);
         FileAttachment attachment = new FileAttachment(
-            fileType,
-            filePath.getFileName().toString(),
-            filePath.toFile().length(),
-            filePath,
-            thumbnail
-        );
+                fileType,
+                filePath.getFileName().toString(),
+                filePath.toFile().length(),
+                filePath,
+                thumbnail);
         Message placeholder = Message.createFilePlaceholder(
-            sender.getId(),
-            sender.getName().isEmpty() ? "" : sender.getName().substring(0, 1),
-            attachment
-        );
+                sender.getId(),
+                sender.getName().isEmpty() ? "" : sender.getName().substring(0, 1),
+                attachment);
         placeholder.setOutgoing(true);
 
         ObservableList<Message> messages = getMessagesForChannel(targetUser);
         messages.add(placeholder);
         try {
             com.saferoom.gui.service.ContactService.getInstance()
-                .updateLastMessage(targetUser, "📎 " + attachment.getFileName(), true);
+                    .updateLastMessage(targetUser, "📎 " + attachment.getFileName(), true);
         } catch (Exception e) {
             System.err.println("[Chat] Error updating contact for file placeholder: " + e.getMessage());
         }
 
         // Check P2P connection (WebRTC DataChannel)
-        com.saferoom.p2p.P2PConnectionManager p2pManager = 
-            com.saferoom.p2p.P2PConnectionManager.getInstance();
-        
+        com.saferoom.p2p.P2PConnectionManager p2pManager = com.saferoom.p2p.P2PConnectionManager.getInstance();
+
         if (!p2pManager.hasActiveConnection(targetUser)) {
             System.out.printf("[Chat] 🔄 No P2P connection with %s, attempting to establish...%n", targetUser);
             placeholder.setStatusText("Connecting...");
-            
+
             // Try to establish P2P connection first
             p2pManager.createConnection(targetUser)
-                .orTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
-                .whenComplete((success, error) -> {
-                    if (error != null || !Boolean.TRUE.equals(success)) {
-                        System.err.printf("[Chat] ❌ Failed to establish P2P connection with %s%n", targetUser);
-                        Platform.runLater(() -> {
-                            javafx.scene.control.Alert alert = new javafx.scene.control.Alert(
-                                javafx.scene.control.Alert.AlertType.ERROR);
-                            alert.setTitle("P2P Error");
-                            alert.setHeaderText("Connection Failed");
-                            alert.setContentText("Could not establish P2P connection with " + targetUser + 
-                                ". Please make sure they are online.");
-                            alert.showAndWait();
-                            placeholder.setStatusText("Failed (connection)");
-                        });
-                        return;
-                    }
-                    
-                    // Connection established, now send the file
-                    System.out.printf("[Chat] ✅ P2P connection established with %s, sending file...%n", targetUser);
-                    Platform.runLater(() -> doSendFile(targetUser, filePath, placeholder, attachment));
-                });
+                    .orTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                    .whenComplete((success, error) -> {
+                        if (error != null || !Boolean.TRUE.equals(success)) {
+                            System.err.printf("[Chat] ❌ Failed to establish P2P connection with %s%n", targetUser);
+                            Platform.runLater(() -> {
+                                javafx.scene.control.Alert alert = new javafx.scene.control.Alert(
+                                        javafx.scene.control.Alert.AlertType.ERROR);
+                                alert.setTitle("P2P Error");
+                                alert.setHeaderText("Connection Failed");
+                                alert.setContentText("Could not establish P2P connection with " + targetUser +
+                                        ". Please make sure they are online.");
+                                alert.showAndWait();
+                                placeholder.setStatusText("Failed (connection)");
+                            });
+                            return;
+                        }
+
+                        // Connection established, now send the file
+                        System.out.printf("[Chat] ✅ P2P connection established with %s, sending file...%n", targetUser);
+                        Platform.runLater(() -> doSendFile(targetUser, filePath, placeholder, attachment));
+                    });
             return;
         }
-        
+
         // P2P connection exists, send file directly
         doSendFile(targetUser, filePath, placeholder, attachment);
     }
-    
+
     /**
      * Actually send the file (after P2P connection is confirmed)
      */
-    private void doSendFile(String targetUser, java.nio.file.Path filePath, 
-                           Message placeholder, FileAttachment attachment) {
-        com.saferoom.p2p.P2PConnectionManager p2pManager = 
-            com.saferoom.p2p.P2PConnectionManager.getInstance();
-        
+    private void doSendFile(String targetUser, java.nio.file.Path filePath,
+            Message placeholder, FileAttachment attachment) {
+        com.saferoom.p2p.P2PConnectionManager p2pManager = com.saferoom.p2p.P2PConnectionManager.getInstance();
+
         try {
             AtomicReference<Long> transferIdRef = new AtomicReference<>(-1L);
 
@@ -406,19 +422,20 @@ public class ChatService {
                         MessageType finalType = attachment.getTargetType();
                         placeholder.setType(finalType);
                         placeholder.setStatusText("Sent");
-                        
-                        System.out.printf("[ChatService] 📁 File transfer completed: %s (type: %s, outgoing: %s)%n", 
-                            attachment.getFileName(), finalType, placeholder.isOutgoing());
-                        
+
+                        System.out.printf("[ChatService] 📁 File transfer completed: %s (type: %s, outgoing: %s)%n",
+                                attachment.getFileName(), finalType, placeholder.isOutgoing());
+
                         // ✅ PERSIST outgoing file message after successful transfer
                         if (persistenceEnabled && messagePersister != null) {
                             // Verify type is correct before persisting
                             System.out.printf("[ChatService] 📁 Persisting with type: %s%n", placeholder.getType());
                             messagePersister.persistMessageAsync(placeholder, targetUser, currentUsername)
-                                .exceptionally(error -> {
-                                    System.err.println("[ChatService] Failed to persist outgoing file: " + error.getMessage());
-                                    return null;
-                                });
+                                    .exceptionally(error -> {
+                                        System.err.println(
+                                                "[ChatService] Failed to persist outgoing file: " + error.getMessage());
+                                        return null;
+                                    });
                         }
                     });
                 }
@@ -447,20 +464,20 @@ public class ChatService {
             };
 
             com.saferoom.p2p.P2PConnectionManager.getInstance()
-                .sendFile(targetUser, filePath, observer)
-                .thenAccept(success -> {
-                    if (!success) {
-                        observer.onTransferFailed(transferIdRef.get(), null);
-                    }
-                });
-            
+                    .sendFile(targetUser, filePath, observer)
+                    .thenAccept(success -> {
+                        if (!success) {
+                            observer.onTransferFailed(transferIdRef.get(), null);
+                        }
+                    });
+
         } catch (Exception e) {
             System.err.printf("[Chat] ❌ File transfer error: %s%n", e.getMessage());
             e.printStackTrace();
-            
+
             Platform.runLater(() -> {
                 javafx.scene.control.Alert alert = new javafx.scene.control.Alert(
-                    javafx.scene.control.Alert.AlertType.ERROR);
+                        javafx.scene.control.Alert.AlertType.ERROR);
                 alert.setTitle("File Transfer Error");
                 alert.setHeaderText("Failed to Send File");
                 alert.setContentText(e.getMessage());
@@ -475,12 +492,11 @@ public class ChatService {
             MessageType type = detectFileType(filePath);
             Image thumbnail = generateThumbnail(type, filePath);
             FileAttachment attachment = new FileAttachment(
-                type,
-                filePath.getFileName().toString(),
-                fileSize,
-                filePath,
-                thumbnail
-            );
+                    type,
+                    filePath.getFileName().toString(),
+                    fileSize,
+                    filePath,
+                    thumbnail);
             Message incoming = new Message("", senderId, senderId.isEmpty() ? "?" : senderId.substring(0, 1));
             incoming.setAttachment(attachment);
             incoming.setType(type);
@@ -489,21 +505,21 @@ public class ChatService {
 
             ObservableList<Message> msgs = getMessagesForChannel(senderId);
             msgs.add(incoming);
-            
+
             // ✅ PERSIST incoming file message to database
             if (persistenceEnabled && messagePersister != null) {
                 messagePersister.persistMessageAsync(incoming, senderId, currentUsername)
-                    .exceptionally(error -> {
-                        System.err.println("[ChatService] Failed to persist incoming file: " + error.getMessage());
-                        return null;
-                    });
-                System.out.printf("[ChatService] 📁 Incoming file persisted: %s from %s%n", 
-                    attachment.getFileName(), senderId);
+                        .exceptionally(error -> {
+                            System.err.println("[ChatService] Failed to persist incoming file: " + error.getMessage());
+                            return null;
+                        });
+                System.out.printf("[ChatService] 📁 Incoming file persisted: %s from %s%n",
+                        attachment.getFileName(), senderId);
             }
 
             try {
                 com.saferoom.gui.service.ContactService.getInstance()
-                    .updateLastMessage(senderId, "📥 " + attachment.getFileName(), false);
+                        .updateLastMessage(senderId, "📥 " + attachment.getFileName(), false);
             } catch (Exception e) {
                 System.err.println("[Chat] Error updating contact for incoming file: " + e.getMessage());
             }
@@ -518,7 +534,8 @@ public class ChatService {
 
     private MessageType detectFileType(Path path) {
         String name = path.getFileName().toString().toLowerCase();
-        if (name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".bmp") || name.endsWith(".gif")) {
+        if (name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".bmp")
+                || name.endsWith(".gif")) {
             return MessageType.IMAGE;
         }
         if (name.endsWith(".mp4") || name.endsWith(".mov") || name.endsWith(".mkv")) {
