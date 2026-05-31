@@ -526,6 +526,7 @@ public class FriendsController {
         });
 
         searchResultsList.setCellFactory(listView -> new SearchResultCell());
+        searchResultsList.setFixedCellSize(55.0);
 
         searchField.focusedProperty().addListener((obs, wasFocused, isNowFocused) -> {
             if (!isNowFocused) {

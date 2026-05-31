@@ -89,7 +89,7 @@ JNIEXPORT jobject JNICALL Java_com_saferoom_webrtc_pipeline_NativeVideoEncoder_c
         // If none found, create new
         if (!dest_buffer) {
             // Hard limit checks could go here
-            if (list.size() < 10) { // Limit to 10 buffers per resolution
+            if (list.size() < 24) { // Limit to 24 buffers per resolution (pipeline depth + safety margin)
                 auto new_buf = std::make_shared<NativeBuffer>(required_size);
                 list.push_back(new_buf);
                 dest_buffer = new_buf.get();

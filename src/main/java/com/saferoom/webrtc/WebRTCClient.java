@@ -908,6 +908,17 @@ public class WebRTCClient {
         // Clean up all audio sinks first (properly remove from tracks)
         cleanupAllAudioSinks();
 
+        // Clean up remote video debug sink (prevents native frame ref leak)
+        if (remoteVideoTrack != null && remoteVideoDebugSink != null) {
+            try {
+                remoteVideoTrack.removeSink(remoteVideoDebugSink);
+            } catch (Exception ignored) {
+                // Track may already be disposed
+            }
+            remoteVideoDebugSink = null;
+            remoteVideoTrack = null;
+        }
+
         // First, remove tracks from peer connection before disposing
         if (peerConnection != null) {
             try {
@@ -1316,6 +1327,8 @@ public class WebRTCClient {
     private volatile VideoTrack remoteVideoTrack;
     private volatile long remoteVideoFrameCount = 0;
     private volatile long lastRemoteVideoLogTime = 0;
+    // Store debug sink reference for cleanup
+    private volatile VideoTrackSink remoteVideoDebugSink;
 
     private void handleRemoteVideoTrack(VideoTrack videoTrack) {
         logger.info("🎥 HANDLING REMOTE VIDEO TRACK");
@@ -1330,34 +1343,38 @@ public class WebRTCClient {
             logger.debug("  After enable - Enabled: " + videoTrack.isEnabled());
         }
 
+        // Cleanup previous debug sink if any (prevents accumulation on re-negotiation)
+        if (this.remoteVideoTrack != null && remoteVideoDebugSink != null) {
+            try {
+                this.remoteVideoTrack.removeSink(remoteVideoDebugSink);
+            } catch (Exception ignored) {
+                // Track may already be disposed
+            }
+            remoteVideoDebugSink = null;
+        }
+
         // Store reference
         this.remoteVideoTrack = videoTrack;
         this.remoteVideoFrameCount = 0;
         this.lastRemoteVideoLogTime = System.currentTimeMillis();
 
         // ═══════════════════════════════════════════════════════════════
-        // DIAGNOSTIC: Add a debug sink directly to detect if frames arrive
-        // This helps distinguish between:
-        // 1. WebRTC not receiving frames (network/ICE issue)
-        // 2. VideoPanel not receiving frames (sink attachment issue)
+        // DIAGNOSTIC: Lightweight debug sink (no frame data access after first frame)
         // ═══════════════════════════════════════════════════════════════
-        VideoTrackSink debugSink = frame -> {
+        remoteVideoDebugSink = frame -> {
             remoteVideoFrameCount++;
             long now = System.currentTimeMillis();
-            // Log first frame immediately, then every 5 seconds
+            // Log first frame immediately, then every 10 seconds
             if (remoteVideoFrameCount == 1) {
                 int width = frame.buffer != null ? frame.buffer.getWidth() : 0;
                 int height = frame.buffer != null ? frame.buffer.getHeight() : 0;
                 logger.info(String.format("🎬 FIRST REMOTE VIDEO FRAME RECEIVED! (size: %dx%d)", width, height));
-            } else if (now - lastRemoteVideoLogTime >= 5000) {
-                int width = frame.buffer != null ? frame.buffer.getWidth() : 0;
-                int height = frame.buffer != null ? frame.buffer.getHeight() : 0;
-                logger.debug(String.format("📹 Remote video: %d frames received (latest: %dx%d)",
-                        remoteVideoFrameCount, width, height));
+            } else if (now - lastRemoteVideoLogTime >= 10000) {
+                logger.debug(String.format("📹 Remote video: %d frames received", remoteVideoFrameCount));
                 lastRemoteVideoLogTime = now;
             }
         };
-        videoTrack.addSink(debugSink);
+        videoTrack.addSink(remoteVideoDebugSink);
         logger.info("  ✅ Debug sink attached to remote video track");
 
         // Video rendering will be handled by VideoPanel through callback

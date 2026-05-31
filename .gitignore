@@ -9,4 +9,4 @@ src/main/resources/oauthconfig.properties
 
 # Ignore logs
 logs/
-*.log
+*.logdownloads/hydra.restore

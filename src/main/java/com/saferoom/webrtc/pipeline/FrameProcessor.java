@@ -21,7 +21,7 @@ import java.util.function.Predicate;
 public final class FrameProcessor implements AutoCloseable {
 
     private static final String QUEUE_CAPACITY_PROPERTY = "saferoom.video.queue.capacity";
-    public static final int DEFAULT_QUEUE_CAPACITY = Integer.getInteger(QUEUE_CAPACITY_PROPERTY, 12);
+    public static final int DEFAULT_QUEUE_CAPACITY = Integer.getInteger(QUEUE_CAPACITY_PROPERTY, 4);
     private static final Duration POLL_TIMEOUT = Duration.ofMillis(50);
     private static final long STALL_THRESHOLD_NANOS = Duration.ofSeconds(2).toNanos();
     private static final long STALL_LOG_INTERVAL_NANOS = Duration.ofSeconds(5).toNanos();
@@ -70,6 +70,11 @@ public final class FrameProcessor implements AutoCloseable {
         if (paused.get()) {
             return;
         }
+        // Backpressure check BEFORE retain to avoid unnecessary native ref-count churn
+        if (!shouldProcess.test(frame)) {
+            stats.recordDrop();
+            return;
+        }
         frame.retain();
         while (!queue.offer(frame)) {
             stats.recordDrop();
@@ -111,21 +116,13 @@ public final class FrameProcessor implements AutoCloseable {
                     // Use Native Conversion (Pool)
                     FrameRenderResult result = convertFrame(frame, nativeEncoder);
 
-                    // ════════════════════════════════════════════════════════════════════════
-                    // NATIVE ENCODING INTEGRATION (Use the JNI Encoder)
-                    // ... (rest is same)
-                    // ════════════════════════════════════════════════════════════════════════
+                    // NOTE: encodeFrame() JNI stub removed — it was a no-op
+                    // (return length;) that added ~2-3ms JNI overhead per frame,
+                    // starving the pipeline below 30fps and causing queue buildup.
 
-                    if (result != null) {
-                        nativeEncoder.encodeFrame(
-                                result.getBuffer(),
-                                result.getWidth() * result.getHeight() * 4,
-                                result.getWidth(),
-                                result.getHeight());
-                    }
-
-                    long processingTimeMs = (System.nanoTime() - start) / 1_000_000;
-                    stats.recordProcessed(System.nanoTime() - start, queue.size());
+                    long elapsed = System.nanoTime() - start;
+                    long processingTimeMs = elapsed / 1_000_000;
+                    stats.recordProcessed(elapsed, queue.size());
 
                     // Log processing stats every 100 frames
                     processedCount++;
