@@ -1,72 +1,90 @@
-# 🔐 SafeRoom_V2 — The Decentralized Workspace.
-> “Zoom, Teams, Discord?  
-> They rent you a room.  
-> **We give you the building.**”  
-> — SafeRoom_V2
+# SafeRoom_V2
+
+SafeRoom_V2 is an experimental peer-to-peer collaboration project built around direct communication between participants rather than relying on a central application server for normal data exchange.
+
+The project was created to explore P2P communication, decentralized room management, file transfer, messaging, and real-time collaboration.
+
+> **This repository is no longer actively maintained.**
+>
+> The project has been discontinued and is kept here primarily for archival and reference purposes.
 
 ---
 
-## 🚀 Beyond "Just Meetings"
-SafeRoom_V2 is not just a video calling app. It is a **serverless, secure, all-in-one collaboration protocol** that challenges the giants:
+## Overview
 
-|    Competing With | Why SafeRoom Wins |
-|-------------------|-------------------|
-| **Zoom / Teams** | No central servers recording your calls. Low latency via **Dynamic Tree Routing**. |
-| **Discord** | "Serverless Rooms" — Your community lives on your devices, not in a data center. No bans, no data mining. |
-| **WeTransfer** | **BitTorrent-like P2P File Transfer**. Send GBs or TBs directly. No upload limits, no cloud storage costs. |
-| **TeamViewer** | Secure, P2P remote screen control without the corporate price tag or security backdoors. |
+SafeRoom_V2 explores a collaboration model where participants communicate directly whenever possible.
 
----
+The project includes experimental implementations of:
 
-## ⚡ Architecture: True Serverless P2P
+* Peer-to-peer communication
+* P2P file transfer
+* Messaging
+* Voice and video communication
+* Screen sharing and remote interaction
+* Multi-peer rooms
+* Peer discovery and connection management
 
-Unlike traditional apps that relay everything through a central cloud, SafeRoom_V2 uses a **completely decentralized architecture**:
-
-### 1. Dynamic Tree Algorithm (Mesh Routing)
-Instead of a star topology (everyone connects to a server), SafeRoom builds a **dynamic, self-healing mesh**.
-- **Low Latency:** Packets take the shortest path between peers.
-- **Resilience:** If one node drops, the tree rebuilds instantly.
-- **Scalability:** The network grows stronger as more users join.
-
-### 2. BitTorrent-like File Vault
-Forget uploading to the cloud. SafeRoom uses a swarm-like protocol for file transfers.
-- **Zero Cloud Storage:** Files stream directly from sender to receiver(s).
-- **Parallel Chunks:** Large files are split and sent via multiple paths for maximum speed.
-- **Resume Capability:** Network drop? It picks up exactly where it left off.
-
-### 3. Serverless ZONE
-In SafeRoom, a "ZONE" isn't a database entry on our server. It's a **cryptographic space** held together by the participants.
-- **Ephemeral or Persistent:** You decide.
-- **No Central Admin:** The community owns the infrastructure.
-- **Uncensorable:** No central authority can delete your room or read your chats.
+The primary goal of the project was to experiment with building collaboration features on top of a P2P-oriented architecture.
 
 ---
 
-## 🛡️ Security vs. "Cloud Security"
+## Architecture
 
-| Feature | Traditional Cloud Apps (Zoom/Teams/Discord) | 🚀 SafeRoom_V2 |
-|---------|---------------------------------------------|----------------|
-| **Data Flow** | Client ➡ Server ➡ Client | Client ➡ Client (P2P) |
-| **Encryption** | Decrypted at server for processing | **True E2EE** (X25519+HKDF). Server sees nothing. |
-| **File Limits** | Capped (2GB - 15GB) | **Unlimited** (Disk speed is the limit) |
-| **Privacy** | Metadata mined for ads/training AI | **Zero Knowledge**. We don't know who you are. |
-| **Trust Model** | Trust the Corporation | **Trust the Math** |
+SafeRoom_V2 was designed around peer-to-peer communication rather than routing all application traffic through a central service.
+
+### Peer-to-Peer Communication
+
+Participants establish connections with other peers and exchange application data directly.
+
+Depending on the feature and network topology, peers can communicate individually or as part of a larger group.
+
+### Multi-Peer Rooms
+
+Rooms, referred to as **ZONEs** in the project, represent groups of connected participants.
+
+The project experimented with dynamically organizing peers inside these rooms and handling peer joins, departures, and connection changes.
+
+### P2P File Transfer
+
+Files can be transferred directly between peers instead of first being uploaded to cloud storage.
+
+The implementation explored:
+
+* Chunked file transfer
+* Parallel transfer between peers
+* Transfer recovery
+* Large file transmission without requiring application-level cloud storage
 
 ---
 
-## 🧠 Philosophy: You Own The ZONE
+## Security
 
-> **If your data passes through their server, it is their data.**
+The project experimented with encrypted peer-to-peer communication and cryptographic identity mechanisms.
 
-SafeRoom_V2 eliminates the middleman entirely.
-- We don't see your files.
-- We don't hear your calls.
-- We don't host your rooms.
-
-We simply provide the **mathematically secure protocol** for you to connect directly.
+Some parts of the repository may represent prototypes or incomplete implementations and should not be treated as production-ready security software.
 
 ---
 
-## 🚧 Status
-**Active Development.**
-Moving fast to replace your entire collaboration stack with a single, secure, native Java executable.
+## Project Status
+
+**Archived / No Longer Maintained**
+
+SafeRoom_V2 is no longer under active development.
+
+There are currently no plans to add new features, provide compatibility updates, fix bugs, or maintain the project for production use.
+
+The repository remains public as a record of the project and as a reference for experiments involving:
+
+* Peer-to-peer networking
+* Distributed communication
+* File transfer protocols
+* Real-time collaboration
+* Network topology management
+
+---
+
+## Disclaimer
+
+SafeRoom_V2 was an experimental project and should not be considered production-ready software.
+
+The repository may contain incomplete features, experimental protocols, outdated dependencies, or architectural decisions that were later abandoned.
